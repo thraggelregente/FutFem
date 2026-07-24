@@ -14,6 +14,16 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot Radar Femenino 24/7 OK")
 
+    def do_HEAD(self):
+        # UptimeRobot y otros monitores suelen chequear con HEAD, no GET.
+        # Sin este método, el servidor respondía 501 y el monitor marcaba "Down".
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        # Evita inundar los logs de Render con una línea por cada ping del monitor
+        pass
+
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
     servidor = HTTPServer(('0.0.0.0', puerto), SimpleHandler)
