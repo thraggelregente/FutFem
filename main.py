@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- SERVIDOR WEB FANTASMA PARA ENGAÑAR A RENDER ---
+# --- SERVIDOR WEB FANTASMA ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -18,21 +18,18 @@ def iniciar_servidor_web():
     servidor = HTTPServer(('0.0.0.0', puerto), SimpleHandler)
     servidor.serve_forever()
 
-# Arranca el servidor web en segundo plano
 Thread(target=iniciar_servidor_web, daemon=True).start()
-# ---------------------------------------------------
+# -----------------------------
 
-TELEGRAM_TOKEN = "8848140762:AAHZhzNMqo5Fm7Be0JIdZgMfYE2v1h9cdzE"
-CHAT_ID = "5039163388"
-ODDS_API_KEY = "8414fdfc89da67c274eaa7afcd5c6023"
+# Lectura segura desde las variables de entorno
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 
-# 5400 segundos = 1 hora y media
 INTERVALO_REVISION = 5400 
-
 partidos_notificados = set()
 
 def enviar_telegram(mensaje):
-    """Envía un mensaje a Telegram directamente."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -110,7 +107,7 @@ def revisar_partidos_nuevos():
 
 if __name__ == "__main__":
     print("Radar Femenino desplegado en Render...", flush=True)
-    enviar_telegram("🤖 *Radar Femenino 24/7 Activado en Render:* Escuchando partidos sin interrupciones.")
+    enviar_telegram("🤖 *Radar Femenino 24/7 Activado en Render:* Escuchando partidos de forma segura.")
     
     while True:
         revisar_partidos_nuevos()
