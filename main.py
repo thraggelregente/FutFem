@@ -1,7 +1,26 @@
 import requests
 import time
 import re
+import os
 from datetime import datetime, timedelta
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# --- SERVIDOR WEB FANTASMA PARA ENGAÑAR A RENDER ---
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot Radar Femenino 24/7 OK")
+
+def iniciar_servidor_web():
+    puerto = int(os.environ.get("PORT", 10000))
+    servidor = HTTPServer(('0.0.0.0', puerto), SimpleHandler)
+    servidor.serve_forever()
+
+# Arranca el servidor web en segundo plano
+Thread(target=iniciar_servidor_web, daemon=True).start()
+# ---------------------------------------------------
 
 TELEGRAM_TOKEN = "8848140762:AAHZhzNMqo5Fm7Be0JIdZgMfYE2v1h9cdzE"
 CHAT_ID = "5039163388"
@@ -13,7 +32,7 @@ INTERVALO_REVISION = 5400
 partidos_notificados = set()
 
 def enviar_telegram(mensaje):
-    """Envía un mensaje a Telegram directamente (sin proxies molestos)."""
+    """Envía un mensaje a Telegram directamente."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
