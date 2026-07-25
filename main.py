@@ -135,6 +135,7 @@ def revisar_partidos_nuevos():
         sport_key = deporte.get("key")
         if not sport_key:
             continue
+        deporte_grupo = deporte.get("group", "Deporte")
 
         url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/events"
         params = {
@@ -175,6 +176,7 @@ def revisar_partidos_nuevos():
                     mensaje = (
                         f"🚨 *¡NUEVO PARTIDO FEMENINO DETECTADO!*\n\n"
                         f"Status: {estado}\n"
+                        f"🏅 *Deporte:* {deporte_grupo}\n"
                         f"🏆 *Torneo:* {torneo}\n"
                         f"⚔️ *Encuentro:* {local} vs {visitante}\n"
                         f"🕒 *Horario:* {horario_formateado}\n"
