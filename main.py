@@ -39,16 +39,28 @@ ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 ODDSPAPI_API_KEY = os.environ.get("ODDSPAPI_API_KEY")
 
 INTERVALO_REVISION = 600  # 10 minutos - ciclo principal (The Odds API, /events no gasta cuota)
-INTERVALO_ODDSPAPI = 4 * 3600  # 4 horas - 1 sola llamada cubre TODOS los deportes (ver revisar_oddspapi)
+INTERVALO_ODDSPAPI = 4 * 3600  # 4 horas - OddsPapi especializado solo en fútbol (250/mes total)
+INTERVALO_HIGHLIGHTLY = 30 * 60  # 30 minutos - Highlightly tiene 100/día POR sub-API (vóley y handball por separado)
 
 ODDSPAPI_BASE = "https://api.oddspapi.io/v4"
-# sportId que nos interesan filtrar de la respuesta (no se pide por separado, se filtra acá)
-ODDSPAPI_SPORTS = {10: "Soccer", 22: "Handball", 23: "Volleyball"}
+
+HIGHLIGHTLY_API_KEY = os.environ.get("HIGHLIGHTLY_API_KEY")
+# Bases confirmadas contra la documentación real de cada sub-API
+HIGHLIGHTLY_SPORTS = {
+    "Soccer": "https://soccer.highlightly.net",
+    "Volleyball": "https://volleyball.highlightly.net",
+    "Handball": "https://handball.highlightly.net",
+}
+HIGHLIGHTLY_ESTADOS_FINALIZADOS = {
+    "Finished", "Finished after penalties", "Finished after extra time",
+    "Cancelled", "Postponed", "Abandoned",
+}
 
 ARCHIVO_NOTIFICADOS = "notificados.json"
 
-# Timestamp del último chequeo de OddsPapi (arranca en 0 para chequear ya al iniciar)
+# Timestamps del último chequeo de cada fuente de intervalo largo (arrancan en 0 para chequear ya al iniciar)
 ultimo_check_oddspapi = 0
+ultimo_check_highlightly = 0
 
 
 # ---------- PERSISTENCIA DE PARTIDOS YA NOTIFICADOS ----------
@@ -220,10 +232,10 @@ def revisar_partidos_nuevos():
 
 
 def revisar_oddspapi():
-    """Fútbol, vóley y handball femenino vía OddsPapi — UNA sola llamada cubre los 3 deportes
-    (y todos los demás que soporta OddsPapi), porque al omitir sportId te trae todo mezclado.
-    Limitación: sin sportId, el rango de fechas tiene que ser menor a 2 días (confirmado por la
-    propia API), así que la ventana hacia adelante es más corta a cambio de gastar 1 solo crédito."""
+    """Fútbol, vóley y handball femenino vía OddsPapi — UNA sola llamada cubre los 3 (y todo lo
+    demás que soporta OddsPapi) porque al omitir sportId trae todo mezclado. Corre en paralelo a
+    Highlightly sin coordinarse entre sí — puede repetir partidos que Highlightly ya avisó, y
+    está bien así (cada fuente tiene su propio prefijo de ID, no se pisan en la persistencia)."""
     if not ODDSPAPI_API_KEY:
         return
 
@@ -231,6 +243,7 @@ def revisar_oddspapi():
     desde = hoy.isoformat()
     hasta = (hoy + timedelta(days=1)).isoformat()  # <2 días de rango, requisito sin sportId
 
+    sports_de_interes = {10: "Soccer", 22: "Handball", 23: "Volleyball"}
     url = f"{ODDSPAPI_BASE}/fixtures"
     params = {"apiKey": ODDSPAPI_API_KEY, "from": desde, "to": hasta}
 
@@ -246,8 +259,8 @@ def revisar_oddspapi():
 
     for fixture in fixtures:
         sport_id = fixture.get("sportId")
-        if sport_id not in ODDSPAPI_SPORTS:
-            continue  # no es fútbol/vóley/handball, lo ignoramos
+        if sport_id not in sports_de_interes:
+            continue
 
         fixture_id = fixture.get("fixtureId")
         torneo = fixture.get("tournamentName", "Torneo Desconocido")
@@ -274,13 +287,72 @@ def revisar_oddspapi():
             notificar_si_nuevo(
                 fuente="oddspapi",
                 id_externo=fixture_id,
-                deporte=ODDSPAPI_SPORTS[sport_id],
+                deporte=sports_de_interes[sport_id],
                 torneo=torneo,
                 local=local,
                 visitante=visitante,
                 horario_formateado=horario_formateado,
                 estado=estado,
             )
+
+
+def revisar_highlightly():
+    """Fútbol, vóley y handball femenino vía Highlightly. Cada deporte es una sub-API
+    independiente con su propia cuota de 100 requests/día. Consulta hoy y mañana (2 llamadas
+    por deporte por ciclo). Corre en paralelo a OddsPapi sin problema si se solapan partidos."""
+    if not HIGHLIGHTLY_API_KEY:
+        return
+
+    headers = {"x-rapidapi-key": HIGHLIGHTLY_API_KEY}
+    hoy = datetime.utcnow().date()
+    fechas = [hoy.isoformat(), (hoy + timedelta(days=1)).isoformat()]
+
+    for nombre_deporte, base_url in HIGHLIGHTLY_SPORTS.items():
+        for fecha in fechas:
+            url = f"{base_url}/matches"
+            params = {"date": fecha, "timezone": "America/Argentina/Buenos_Aires"}
+
+            try:
+                respuesta = requests.get(url, headers=headers, params=params, timeout=20)
+                if respuesta.status_code != 200:
+                    print(f"Error en Highlightly ({nombre_deporte}, {fecha}) ({respuesta.status_code}): {respuesta.text}", flush=True)
+                    continue
+                data = respuesta.json().get("data", [])
+            except Exception as e:
+                print(f"Error de conexión con Highlightly ({nombre_deporte}, {fecha}): {e}", flush=True)
+                continue
+
+            for partido in data:
+                match_id = partido.get("id")
+                torneo = partido.get("league", {}).get("name", "Torneo Desconocido")
+                local = partido.get("homeTeam", {}).get("name", "Local")
+                visitante = partido.get("awayTeam", {}).get("name", "Visitante")
+                descripcion_estado = partido.get("state", {}).get("description", "")
+
+                if descripcion_estado in HIGHLIGHTLY_ESTADOS_FINALIZADOS:
+                    continue
+
+                fecha_str = partido.get("date", "")
+                if fecha_str:
+                    fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                    fecha_arg = fecha_utc - timedelta(hours=3)
+                    horario_formateado = fecha_arg.strftime("%d/%m/%Y %H:%M hs (ARG)")
+                else:
+                    horario_formateado = "A confirmar"
+
+                estado = "📅 *PRÓXIMO PARTIDO*" if descripcion_estado == "Not started" else "🔴 *EN VIVO / EN JUEGO*"
+
+                if match_id and es_partido_femenino_valido(torneo, local, visitante):
+                    notificar_si_nuevo(
+                        fuente="highlightly",
+                        id_externo=match_id,
+                        deporte=nombre_deporte,
+                        torneo=torneo,
+                        local=local,
+                        visitante=visitante,
+                        horario_formateado=horario_formateado,
+                        estado=estado,
+                    )
 
 
 if __name__ == "__main__":
@@ -293,7 +365,11 @@ if __name__ == "__main__":
         ahora_ts = time.time()
 
         if ahora_ts - ultimo_check_oddspapi >= INTERVALO_ODDSPAPI:
-            revisar_oddspapi()  # 1 sola llamada: fútbol + vóley + handball, cada 4 horas
+            revisar_oddspapi()  # fútbol + vóley + handball (1 llamada), cada 4 horas
             ultimo_check_oddspapi = ahora_ts
+
+        if ahora_ts - ultimo_check_highlightly >= INTERVALO_HIGHLIGHTLY:
+            revisar_highlightly()  # fútbol + vóley + handball (3 sub-APIs), cada 30 min
+            ultimo_check_highlightly = ahora_ts
 
         time.sleep(INTERVALO_REVISION)
