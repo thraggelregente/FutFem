@@ -35,6 +35,7 @@ Thread(target=iniciar_servidor_web, daemon=True).start()
 # Lectura segura desde las variables de entorno
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
+CHAT_ID_GRUPO = os.environ.get("CHAT_ID_GRUPO")  # opcional - si está seteado, también manda al grupo
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
 ODDSPAPI_API_KEY = os.environ.get("ODDSPAPI_API_KEY")
 
@@ -86,15 +87,18 @@ partidos_notificados = cargar_notificados()
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": mensaje,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Error enviando mensaje a Telegram: {e}", flush=True)
+    destinos = [chat_id for chat_id in (CHAT_ID, CHAT_ID_GRUPO) if chat_id]  # ignora los que no estén seteados
+
+    for destino in destinos:
+        payload = {
+            "chat_id": destino,
+            "text": mensaje,
+            "parse_mode": "Markdown"
+        }
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"Error enviando mensaje a Telegram (chat {destino}): {e}", flush=True)
 
 
 def es_partido_femenino_valido(nombre_torneo, equipo1, equipo2):
