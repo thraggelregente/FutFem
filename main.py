@@ -364,7 +364,7 @@ if __name__ == "__main__":
     enviar_telegram("🤖 *Radar Femenino 24/7 Activado en Render:* Escuchando partidos de forma segura.")
 
     while True:
-        revisar_partidos_nuevos()  # The Odds API - básquet, cada ciclo (10 min)
+        # revisar_partidos_nuevos()  # The Odds API (básquet/WNBA) - desactivado a pedido: solo fútbol, vóley y handball
 
         ahora_ts = time.time()
 
@@ -377,3 +377,4 @@ if __name__ == "__main__":
             ultimo_check_highlightly = ahora_ts
 
         time.sleep(INTERVALO_REVISION)
+        
