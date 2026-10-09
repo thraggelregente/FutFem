@@ -1,10 +1,10 @@
 """
 main.py
-Radar Mismatch Multideporte Femenino 360°
-- Servidor Web Fantasma activo para Render Web Service y UptimeRobot.
-- Monitoreo de 14 deportes femeninos vía Sofascore.
-- Evaluación cuantitativa mediante motor_mismatches (Costo $0, Cero límites de IA).
-- Alertas automáticas estructuradas a Telegram.
+Radar Mismatch Multideporte Femenino 360° Institucional
+- 14 Deportes vía Sofascore
+- Cuadros oficiales ITF World Tennis Tour
+- Conector complementario AiScore
+- Validador de cuotas y líneas
 """
 
 import requests
@@ -16,8 +16,9 @@ from datetime import datetime, timedelta
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import motor_mismatches
+import fuentes_alternativas
 
-# --- SERVIDOR WEB FANTASMA (Render Web Service) ---
+# --- SERVIDOR WEB FANTASMA (Render) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -37,16 +38,15 @@ def iniciar_servidor_web():
     servidor.serve_forever()
 
 Thread(target=iniciar_servidor_web, daemon=True).start()
-# --------------------------------------------------
+# --------------------------------------
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHAT_ID_GRUPO = os.environ.get("CHAT_ID_GRUPO")
 
-INTERVALO_REVISION = 1800  # 30 minutos por barrido completo
+INTERVALO_REVISION = 1800  # 30 minutos
 ARCHIVO_NOTIFICADOS = "notificados.json"
 
-# Los 14 deportes del Radar
 DEPORTES_RADAR = {
     "volleyball": "Volleyball",
     "football": "Soccer",
@@ -79,7 +79,6 @@ HEADERS_SOFASCORE = {
 }
 
 
-# ---------- PERSISTENCIA ----------
 def cargar_notificados():
     if os.path.exists(ARCHIVO_NOTIFICADOS):
         try:
@@ -115,17 +114,14 @@ def enviar_telegram(mensaje):
 
 def es_deporte_femenino_valido(torneo, local, visita):
     texto = f"{torneo} {local} {visita}".lower()
-
     if any(k in texto for k in ["wta", "itf women", "billie jean king"]):
         return True
     if any(k in texto for k in ["atp", "challenger", "davis cup"]):
         return False
-
     if any(re.search(rf"\b{kw}\b", texto) for kw in KEYWORDS_FEMENINAS):
         return True
     if re.search(r'\((w|f)\)', texto):
         return True
-
     return False
 
 
@@ -219,6 +215,30 @@ def ejecutar_barrido_radar():
     global partidos_notificados
     print(f"[{datetime.now().strftime('%H:%M')}] Iniciando barrido Radar Femenino 360°...", flush=True)
 
+    # 1. BARRIDO ITF OFICIAL (Draws directos)
+    mismatches_itf = fuentes_alternativas.obtener_mismatches_itf()
+    for m in mismatches_itf:
+        if m["id"] in partidos_notificados:
+            continue
+
+        estado_odds = fuentes_alternativas.validar_cuota_mercado(m["local"])
+        mensaje = (
+            f"🚨 *MISMATCH DETECTADO — ITF WOMEN*\n\n"
+            f"🏅 *Deporte:* Tennis\n"
+            f"🏆 *Torneo:* {m['torneo']}\n"
+            f"⚔️ *Encuentro:* {m['local']} vs {m['visita']}\n"
+            f"🕒 *Horario:* {m['horario']}\n\n"
+            f"📊 *La Clave del Mismatch:*\n• {m['detalle']}\n\n"
+            f"🎯 *Mercado Sugerido:* Under Games / Hándicap de Juegos\n"
+            f"📈 *Estado del Mercado:* {estado_odds}\n"
+            f"🔥 *Confianza:* Muy Alta"
+        )
+        enviar_telegram(mensaje)
+        partidos_notificados.add(m["id"])
+        guardar_notificados(partidos_notificados)
+        print(f"-> Mismatch ITF Oficial Notificado: {m['local']} vs {m['visita']}", flush=True)
+
+    # 2. BARRIDO MULTIDEPORTE (Sofascore)
     for slug, deporte_nombre in DEPORTES_RADAR.items():
         eventos = obtener_partidos_sofascore(slug)
         if not eventos:
@@ -245,7 +265,6 @@ def ejecutar_barrido_radar():
             id_loc = local_obj.get("id")
             id_vis = visita_obj.get("id")
 
-            # 1. Filtro estricto femenino
             if not es_deporte_femenino_valido(competicion, nom_loc, nom_vis):
                 continue
 
@@ -253,7 +272,7 @@ def ejecutar_barrido_radar():
             hora_arg = (datetime.fromtimestamp(start_ts) - timedelta(hours=0)).strftime("%H:%M hs (ARG)")
             estado = "🔴 *EN VIVO (LIVE)*" if ev.get("status", {}).get("type") == "inprogress" else "🟢 *PRE*"
 
-            # 2. Análisis Tenis vs Deportes de Conjunto
+            # Tenis en Sofascore
             if deporte_nombre == "Tennis":
                 rank_loc = local_obj.get("ranking")
                 rank_vis = visita_obj.get("ranking")
@@ -261,6 +280,7 @@ def ejecutar_barrido_radar():
 
                 if hay_wc:
                     pick = motor_mismatches.sugerir_mercado("Tennis", [detalle_wc], es_favorito_local=True)
+                    estado_odds = fuentes_alternativas.validar_cuota_mercado(nom_loc)
                     mensaje = (
                         f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
                         f"Status: {estado}\n"
@@ -270,17 +290,18 @@ def ejecutar_barrido_radar():
                         f"🕒 *Horario:* {hora_arg}\n\n"
                         f"📊 *La Clave del Mismatch:*\n• {detalle_wc}\n\n"
                         f"🎯 *Mercado Sugerido:* {pick}\n"
+                        f"📈 *Estado del Mercado:* {estado_odds}\n"
                         f"🔥 *Confianza:* Muy Alta"
                     )
                     enviar_telegram(mensaje)
                     partidos_notificados.add(id_unico)
                     guardar_notificados(partidos_notificados)
-                    print(f"-> Mismatch Notificado (Tenis): {nom_loc} vs {nom_vis}", flush=True)
+                    print(f"-> Mismatch Tenis Notificado: {nom_loc} vs {nom_vis}", flush=True)
                 else:
                     partidos_notificados.add(id_unico)
                 continue
 
-            # Deportes de Equipo (Voley, Futbol, Basket, Handball, etc.)
+            # Deportes Colectivos
             tourn_id = torneo_obj.get("uniqueTournament", {}).get("id")
             season_id = ev.get("season", {}).get("id")
 
@@ -297,7 +318,6 @@ def ejecutar_barrido_radar():
             h2h_raw = obtener_h2h_sofascore(event_id)
             h2h_eval = motor_mismatches.analizar_h2h_reciente(h2h_raw, id_loc, id_vis)
 
-            # 3. Evaluación del Mismatch
             hay_mismatch, alertas, pick = motor_mismatches.evaluar_mismatch(
                 deporte=deporte_nombre,
                 perf_local=perf_loc,
@@ -308,6 +328,7 @@ def ejecutar_barrido_radar():
             )
 
             if hay_mismatch:
+                estado_odds = fuentes_alternativas.validar_cuota_mercado(nom_loc)
                 detalles_txt = "\n".join([f"• {a}" for a in alertas])
                 mensaje = (
                     f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
@@ -318,6 +339,7 @@ def ejecutar_barrido_radar():
                     f"🕒 *Horario:* {hora_arg}\n\n"
                     f"📊 *La Clave del Mismatch:*\n{detalles_txt}\n\n"
                     f"🎯 *Mercado Sugerido:* {pick}\n"
+                    f"📈 *Estado del Mercado:* {estado_odds}\n"
                     f"🔥 *Confianza:* Alta"
                 )
                 enviar_telegram(mensaje)
@@ -329,7 +351,7 @@ def ejecutar_barrido_radar():
 
 if __name__ == "__main__":
     print("Radar Cuantitativo Multideporte Femenino 360° desplegado...", flush=True)
-    enviar_telegram("🤖 *Radar Femenino 360° Cuantitativo Activado:* Monitoreando 14 deportes con motor de triangulación, tablas y forma vigente.")
+    enviar_telegram("🤖 *Radar Femenino 360° Institucional:* Monitoreo multicanal con validación de cuotas activo.")
 
     while True:
         try:
