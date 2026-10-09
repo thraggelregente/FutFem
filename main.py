@@ -1,3 +1,12 @@
+"""
+main.py
+Radar Mismatch Multideporte Femenino 360°
+- Servidor Web Fantasma activo para Render Web Service y UptimeRobot.
+- Monitoreo de 14 deportes femeninos vía Sofascore.
+- Evaluación cuantitativa mediante motor_mismatches (Costo $0, Cero límites de IA).
+- Alertas automáticas estructuradas a Telegram.
+"""
+
 import requests
 import time
 import re
@@ -6,15 +15,14 @@ import json
 from datetime import datetime, timedelta
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from google import genai
-from google.genai import types
+import motor_mismatches
 
-# --- SERVIDOR WEB FANTASMA (necesario para Render Web Service) ---
+# --- SERVIDOR WEB FANTASMA (Render Web Service) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Radar Femenino 24/7 OK")
+        self.wfile.write(b"Radar Mismatches Femenino 360 OK")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -29,430 +37,304 @@ def iniciar_servidor_web():
     servidor.serve_forever()
 
 Thread(target=iniciar_servidor_web, daemon=True).start()
-# -------------------------------------------------------------
+# --------------------------------------------------
 
-# Lectura segura desde variables de entorno
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHAT_ID_GRUPO = os.environ.get("CHAT_ID_GRUPO")
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-ODDSPAPI_API_KEY = os.environ.get("ODDSPAPI_API_KEY")
-HIGHLIGHTLY_API_KEY = os.environ.get("HIGHLIGHTLY_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Inicialización de cliente Gemini
-ai_client = None
-if GEMINI_API_KEY:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
-
-INTERVALO_REVISION = 600  # 10 minutos
-INTERVALO_ODDSPAPI = 4 * 3600  # 4 horas
-INTERVALO_HIGHLIGHTLY = 30 * 60  # 30 minutos
-
-ODDSPAPI_BASE = "https://api.oddspapi.io/v4"
-HIGHLIGHTLY_SPORTS = {
-    "Soccer": "https://soccer.highlightly.net",
-    "Volleyball": "https://volleyball.highlightly.net",
-    "Handball": "https://handball.highlightly.net",
-}
-HIGHLIGHTLY_ESTADOS_FINALIZADOS = {
-    "Finished", "Finished after penalties", "Finished after extra time",
-    "Cancelled", "Postponed", "Abandoned",
-}
-
+INTERVALO_REVISION = 1800  # 30 minutos por barrido completo
 ARCHIVO_NOTIFICADOS = "notificados.json"
-ultimo_check_oddspapi = 0
-ultimo_check_highlightly = 0
+
+# Los 14 deportes del Radar
+DEPORTES_RADAR = {
+    "volleyball": "Volleyball",
+    "football": "Soccer",
+    "basketball": "Basketball",
+    "handball": "Handball",
+    "tennis": "Tennis",
+    "futsal": "Futsal",
+    "ice-hockey": "Ice Hockey",
+    "floorball": "Floorball",
+    "waterpolo": "Waterpolo",
+    "table-tennis": "Table Tennis",
+    "badminton": "Badminton",
+    "rugby": "Rugby",
+    "field-hockey": "Field Hockey",
+    "cricket": "Cricket"
+}
+
+KEYWORDS_FEMENINAS = [
+    "women", "womens", "wom", "fem", "femenil", "femenino", "femenina", 
+    "donne", "mulheres", "damas", "feminina", "ladies", "dames", "frauen", 
+    "damen", "kobiety", "zeny", "wta", "itf women", "wnba", "wsl", "nwsl",
+    "liga f", "serie a fem", "frauen-bundesliga", "sdhl", "pwhl"
+]
+
+HEADERS_SOFASCORE = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com"
+}
 
 
-# ---------- PERSISTENCIA DE PARTIDOS YA NOTIFICADOS ----------
+# ---------- PERSISTENCIA ----------
 def cargar_notificados():
     if os.path.exists(ARCHIVO_NOTIFICADOS):
         try:
             with open(ARCHIVO_NOTIFICADOS, "r") as f:
                 return set(json.load(f))
-        except Exception as e:
-            print(f"Error leyendo {ARCHIVO_NOTIFICADOS}: {e}", flush=True)
+        except Exception:
+            pass
     return set()
 
 def guardar_notificados(notificados):
     try:
         with open(ARCHIVO_NOTIFICADOS, "w") as f:
             json.dump(list(notificados), f)
-    except Exception as e:
-        print(f"Error guardando {ARCHIVO_NOTIFICADOS}: {e}", flush=True)
+    except Exception:
+        pass
 
 partidos_notificados = cargar_notificados()
-# ---------------------------------------------------------------
 
 
 def enviar_telegram(mensaje):
     if not TELEGRAM_TOKEN:
-        print("Falta TELEGRAM_TOKEN", flush=True)
         return
-
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    destinos = [chat_id for chat_id in (CHAT_ID, CHAT_ID_GRUPO) if chat_id]
+    destinos = [c for c in (CHAT_ID, CHAT_ID_GRUPO) if c]
 
-    for destino in destinos:
-        payload = {
-            "chat_id": destino,
-            "text": mensaje,
-            "parse_mode": "Markdown"
-        }
+    for d in destinos:
+        payload = {"chat_id": d, "text": mensaje, "parse_mode": "Markdown"}
         try:
             requests.post(url, json=payload, timeout=10)
-        except Exception as e:
-            print(f"Error enviando a Telegram (chat {destino}): {e}", flush=True)
+        except Exception:
+            pass
 
 
-def es_partido_femenino_valido(nombre_torneo, equipo1, equipo2):
-    """Filtra y asegura que sea 100% deporte femenino (incluye tenis, voley, basket, futbol, etc.)."""
-    texto_completo = f"{nombre_torneo} {equipo1} {equipo2}".lower()
+def es_deporte_femenino_valido(torneo, local, visita):
+    texto = f"{torneo} {local} {visita}".lower()
 
-    # Si es tenis femenino
-    if any(t in texto_completo for t in ["wta", "itf women", "billie jean king"]):
+    if any(k in texto for k in ["wta", "itf women", "billie jean king"]):
         return True
-
-    # Descartar tenis masculino de plano
-    if any(t in texto_completo for t in ["atp", "challenger", "davis cup"]):
+    if any(k in texto for k in ["atp", "challenger", "davis cup"]):
         return False
 
-    patrones_femeninos = [
-        r'\bwomen\b', r'\bwomens\b', r'\bwom\b', r'\bfemenino\b', r'\bfemenina\b',
-        r'\bfem\b', r'\bladies\b', r'\bnwsl\b', r'\bwsl\b', r'\bwnba\b',
-    ]
-    if any(re.search(patron, texto_completo) for patron in patrones_femeninos):
+    if any(re.search(rf"\b{kw}\b", texto) for kw in KEYWORDS_FEMENINAS):
         return True
-
-    if re.search(r'\((w|f)\)', texto_completo):
+    if re.search(r'\((w|f)\)', texto):
         return True
-
-    for campo in (nombre_torneo, equipo1, equipo2):
-        campo_l = (campo or "").lower().strip()
-        if re.search(r'(^|\s)-?[wf]$', campo_l):
-            return True
 
     return False
 
 
-def analizar_mismatch_ia(deporte, torneo, local, visitante):
-    """
-    Analiza con Gemini y búsqueda web si hay un desbalance deportivo real.
-    Incluye reintentos si se alcanza el límite por minuto (429).
-    """
-    if not ai_client:
-        return None
-
-    ahora_str = datetime.now().strftime("%Y-%m-%d")
-    prompt = f"""
-    Eres un Analista de Mismatches Multideporte de Élite especializado EXCLUSIVAMENTE en Deporte Femenino.
-    Fecha actual: {ahora_str}.
-
-    OBJETIVO:
-    Determina si existe un DESEQUILIBRIO EXTREMO / ASIMETRÍA CLARA entre:
-    - Deporte: {deporte}
-    - Competición: {torneo}
-    - Encuentro: {local} vs {visitante}
-
-    JERARQUÍA DE ANÁLISIS:
-    1. FORMA ACTUAL (MANDATORIO): Racha vigente y nivel en la temporada actual. Si un dato es viejo, descártalo.
-    2. CONTEXTO RECIENTE: H2H de los últimos 12 meses.
-    3. FACTORES DETERMINANTES:
-       - Tenis: Wild Card (WC) sin ranking / amateur vs jugadora profesional activa.
-       - Vóley/Basket/Handball/Fútbol: Puntero vs Colista hundido, diferencia de categoría en copas, o brechas técnicas abismales.
-
-    REGLA DE SALIDA:
-    - Si el partido es parejo, disputado o sin mismatch evidente, responde EXACTAMENTE: NO_MISMATCH
-    - Si HAY mismatch claro, responde ÚNICAMENTE en JSON con esta estructura:
-    {{
-      "hay_mismatch": true,
-      "resumen_clave": "Explicación concreta de 2 líneas sobre la asimetría y forma actual",
-      "mercado_sugerido": "Pick recomendado (ej: Handicap -2.5 sets, Under X goles/puntos, Sets 2-0, etc.)",
-      "confianza": "Alta / Muy Alta"
-    }}
-    """
-
-    for intento in range(3):
-        try:
-            response = ai_client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    tools=[types.Tool(google_search=types.GoogleSearch())]
-                )
-            )
-            texto = (response.text or "").strip()
-            if "NO_MISMATCH" in texto:
-                return "PAREJO"
-
-            if "```json" in texto:
-                texto = texto.split("```json")[1].split("```")[0].strip()
-            elif "```" in texto:
-                texto = texto.split("```")[1].split("```")[0].strip()
-
-            return json.loads(texto)
-
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                print(f"Límite de tasa alcanzado. Esperando 12s para reintentar ({local} vs {visitante})...", flush=True)
-                time.sleep(12)
-            else:
-                print(f"Error en análisis IA ({local} vs {visitante}): {e}", flush=True)
-                return None
-
-    return None
-
-
-def evaluar_y_notificar(fuente, id_externo, deporte, torneo, local, visitante, horario_formateado, estado):
-    global partidos_notificados
-    id_unico = f"{fuente}_{id_externo}"
-
-    if id_unico in partidos_notificados:
-        return False
-
-    if not es_partido_femenino_valido(torneo, local, visitante):
-        return False
-
-    print(f"[{datetime.now().strftime('%H:%M')}] Evaluando ({deporte}): {local} vs {visitante}...", flush=True)
-
-    # Pausa de 4 segundos antes de consultar para respetar el límite de peticiones por minuto
-    time.sleep(4)
-
-    analisis = analizar_mismatch_ia(deporte, torneo, local, visitante)
-
-    # Si dio error de API/conexión, no se marca para reintentar en el próximo ciclo
-    if analisis is None:
-        print(f"-> Salteado temporalmente por error de API: {local} vs {visitante}", flush=True)
-        return False
-
-    # Si la IA determinó que es parejo
-    if analisis == "PAREJO" or not analisis.get("hay_mismatch"):
-        partidos_notificados.add(id_unico)
-        guardar_notificados(partidos_notificados)
-        print(f"-> Descartado (parejo / sin mismatch): {local} vs {visitante}", flush=True)
-        return False
-
-    # Mismatch confirmado
-    mensaje = (
-        f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
-        f"Status: {estado}\n"
-        f"🏅 *Deporte:* {deporte}\n"
-        f"🏆 *Competición:* {torneo}\n"
-        f"⚔️ *Encuentro:* {local} vs {visitante}\n"
-        f"🕒 *Horario:* {horario_formateado}\n\n"
-        f"📊 *Clave del Desbalance:*\n{analisis.get('resumen_clave')}\n\n"
-        f"🎯 *Mercado Sugerido:* {analisis.get('mercado_sugerido')}\n"
-        f"🔥 *Confianza:* {analisis.get('confianza', 'Alta')}\n"
-        f"📡 *Fuente:* {fuente}"
-    )
-
-    enviar_telegram(mensaje)
-    partidos_notificados.add(id_unico)
-    guardar_notificados(partidos_notificados)
-    print(f"[{datetime.now().strftime('%H:%M')}] ¡MISMATCH NOTIFICADO! {local} vs {visitante}", flush=True)
-    return True
-
-
-def obtener_deportes_activos():
-    url = "https://api.the-odds-api.com/v4/sports"
-    params = {"apiKey": ODDS_API_KEY}
+def obtener_partidos_sofascore(slug):
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    url = f"https://api.sofascore.com/api/v1/sport/{slug}/scheduled-events/{hoy}"
     try:
-        respuesta = requests.get(url, params=params, timeout=10)
-        if respuesta.status_code != 200:
+        r = requests.get(url, headers=HEADERS_SOFASCORE, timeout=12)
+        if r.status_code == 200:
+            return r.json().get("events", [])
+    except Exception:
+        pass
+    return []
+
+
+def obtener_tabla_torneo(tourn_id, season_id):
+    if not tourn_id or not season_id:
+        return {}
+    url = f"https://api.sofascore.com/api/v1/tournament/{tourn_id}/season/{season_id}/standings/total"
+    try:
+        r = requests.get(url, headers=HEADERS_SOFASCORE, timeout=10)
+        if r.status_code != 200:
+            return {}
+        standings = r.json().get("standings", [])
+        if not standings:
+            return {}
+        tabla = {}
+        for f in standings[0].get("rows", []):
+            tid = f.get("team", {}).get("id")
+            if tid:
+                tabla[tid] = {
+                    "posicion": f.get("position", 0),
+                    "puntos": f.get("points", 0),
+                    "partidos_jugados": f.get("matches", 0),
+                    "dif_neta": f.get("scoresFor", 0) - f.get("scoresAgainst", 0)
+                }
+        return tabla
+    except Exception:
+        return {}
+
+
+def obtener_ultimos_partidos(team_id):
+    if not team_id:
+        return []
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
+    try:
+        time.sleep(1)
+        r = requests.get(url, headers=HEADERS_SOFASCORE, timeout=10)
+        if r.status_code != 200:
             return []
-        return respuesta.json()
-    except Exception as e:
-        print(f"Error al listar The Odds API: {e}", flush=True)
+        partidos = []
+        for ev in r.json().get("events", [])[:8]:
+            dt = datetime.fromtimestamp(ev.get("startTimestamp", 0))
+            partidos.append({
+                "fecha": dt.isoformat(),
+                "id_local": ev.get("homeTeam", {}).get("id"),
+                "nom_local": ev.get("homeTeam", {}).get("name"),
+                "id_visita": ev.get("awayTeam", {}).get("id"),
+                "nom_visita": ev.get("awayTeam", {}).get("name"),
+                "puntos_local": ev.get("homeScore", {}).get("current"),
+                "puntos_visita": ev.get("awayScore", {}).get("current")
+            })
+        return partidos
+    except Exception:
         return []
 
 
-def revisar_partidos_nuevos():
-    if not ODDS_API_KEY:
-        return
+def obtener_h2h_sofascore(event_id):
+    url = f"https://api.sofascore.com/api/v1/event/{event_id}/h2h"
+    try:
+        time.sleep(0.5)
+        r = requests.get(url, headers=HEADERS_SOFASCORE, timeout=10)
+        if r.status_code != 200:
+            return []
+        h2h_data = []
+        for ev in r.json().get("events", [])[:5]:
+            dt = datetime.fromtimestamp(ev.get("startTimestamp", 0))
+            h2h_data.append({
+                "fecha": dt.isoformat(),
+                "id_local": ev.get("homeTeam", {}).get("id"),
+                "id_visita": ev.get("awayTeam", {}).get("id"),
+                "puntos_local": ev.get("homeScore", {}).get("current"),
+                "puntos_visita": ev.get("awayScore", {}).get("current")
+            })
+        return h2h_data
+    except Exception:
+        return []
 
-    deportes = obtener_deportes_activos()
-    if not deportes:
-        return
 
-    ahora_arg = datetime.utcnow() - timedelta(hours=3)
+def ejecutar_barrido_radar():
+    global partidos_notificados
+    print(f"[{datetime.now().strftime('%H:%M')}] Iniciando barrido Radar Femenino 360°...", flush=True)
 
-    for deporte in deportes:
-        sport_key = deporte.get("key")
-        if not sport_key:
+    for slug, deporte_nombre in DEPORTES_RADAR.items():
+        eventos = obtener_partidos_sofascore(slug)
+        if not eventos:
             continue
-        deporte_grupo = deporte.get("group", "Deporte")
 
-        url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/events"
-        params = {"apiKey": ODDS_API_KEY, "dateFormat": "iso"}
-
-        try:
-            respuesta = requests.get(url, params=params, timeout=10)
-            if respuesta.status_code != 200:
+        for ev in eventos:
+            event_id = ev.get("id")
+            if not event_id:
                 continue
-            partidos = respuesta.json()
-        except Exception:
-            continue
 
-        for partido in partidos:
-            partido_id = partido.get("id")
-            torneo = partido.get("sport_title", "Torneo Desconocido")
-            local = partido.get("home_team", "Local")
-            visitante = partido.get("away_team", "Visitante")
+            id_unico = f"sofa_{event_id}"
+            if id_unico in partidos_notificados:
+                continue
 
-            fecha_str = partido.get("commence_time", "")
-            if fecha_str:
-                fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                fecha_arg = fecha_utc - timedelta(hours=3)
-                horario_formateado = fecha_arg.strftime("%d/%m/%Y %H:%M hs (ARG)")
-            else:
-                fecha_arg = None
-                horario_formateado = "A confirmar"
+            torneo_obj = ev.get("tournament", {})
+            torneo_nom = torneo_obj.get("name", "Torneo")
+            cat_nom = torneo_obj.get("category", {}).get("name", "")
+            competicion = f"{torneo_nom} ({cat_nom})" if cat_nom else torneo_nom
 
-            estado = "🔴 *EN VIVO / EN JUEGO*" if (fecha_arg and fecha_arg <= ahora_arg) else "📅 *PRÓXIMO PARTIDO*"
+            local_obj = ev.get("homeTeam", {})
+            visita_obj = ev.get("awayTeam", {})
+            nom_loc = local_obj.get("name", "Local")
+            nom_vis = visita_obj.get("name", "Visitante")
+            id_loc = local_obj.get("id")
+            id_vis = visita_obj.get("id")
 
-            evaluar_y_notificar(
-                fuente="theoddsapi",
-                id_externo=partido_id,
-                deporte=deporte_grupo,
-                torneo=torneo,
-                local=local,
-                visitante=visitante,
-                horario_formateado=horario_formateado,
-                estado=estado,
+            # 1. Filtro estricto femenino
+            if not es_deporte_femenino_valido(competicion, nom_loc, nom_vis):
+                continue
+
+            start_ts = ev.get("startTimestamp", 0)
+            hora_arg = (datetime.fromtimestamp(start_ts) - timedelta(hours=0)).strftime("%H:%M hs (ARG)")
+            estado = "🔴 *EN VIVO (LIVE)*" if ev.get("status", {}).get("type") == "inprogress" else "🟢 *PRE*"
+
+            # 2. Análisis Tenis vs Deportes de Conjunto
+            if deporte_nombre == "Tennis":
+                rank_loc = local_obj.get("ranking")
+                rank_vis = visita_obj.get("ranking")
+                hay_wc, detalle_wc = motor_mismatches.evaluar_mismatch_tenis(nom_loc, nom_vis, rank_loc, rank_vis)
+
+                if hay_wc:
+                    pick = motor_mismatches.sugerir_mercado("Tennis", [detalle_wc], es_favorito_local=True)
+                    mensaje = (
+                        f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
+                        f"Status: {estado}\n"
+                        f"🏅 *Deporte:* Tennis\n"
+                        f"🏆 *Torneo:* {competicion}\n"
+                        f"⚔️ *Partido:* {nom_loc} vs {nom_vis}\n"
+                        f"🕒 *Horario:* {hora_arg}\n\n"
+                        f"📊 *La Clave del Mismatch:*\n• {detalle_wc}\n\n"
+                        f"🎯 *Mercado Sugerido:* {pick}\n"
+                        f"🔥 *Confianza:* Muy Alta"
+                    )
+                    enviar_telegram(mensaje)
+                    partidos_notificados.add(id_unico)
+                    guardar_notificados(partidos_notificados)
+                    print(f"-> Mismatch Notificado (Tenis): {nom_loc} vs {nom_vis}", flush=True)
+                else:
+                    partidos_notificados.add(id_unico)
+                continue
+
+            # Deportes de Equipo (Voley, Futbol, Basket, Handball, etc.)
+            tourn_id = torneo_obj.get("uniqueTournament", {}).get("id")
+            season_id = ev.get("season", {}).get("id")
+
+            tabla = obtener_tabla_torneo(tourn_id, season_id)
+            tabla_eval = motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis)
+
+            hist_loc = obtener_ultimos_partidos(id_loc)
+            hist_vis = obtener_ultimos_partidos(id_vis)
+
+            perf_loc = motor_mismatches.evaluar_rendimiento_reciente(hist_loc, id_loc)
+            perf_vis = motor_mismatches.evaluar_rendimiento_reciente(hist_vis, id_vis)
+
+            triangs = motor_mismatches.triangular_rivales(hist_loc, id_loc, hist_vis, id_vis)
+            h2h_raw = obtener_h2h_sofascore(event_id)
+            h2h_eval = motor_mismatches.analizar_h2h_reciente(h2h_raw, id_loc, id_vis)
+
+            # 3. Evaluación del Mismatch
+            hay_mismatch, alertas, pick = motor_mismatches.evaluar_mismatch(
+                deporte=deporte_nombre,
+                perf_local=perf_loc,
+                perf_visita=perf_vis,
+                triangulaciones=triangs,
+                h2h=h2h_eval,
+                tabla_local_visita=tabla_eval
             )
 
-
-def revisar_oddspapi():
-    if not ODDSPAPI_API_KEY:
-        return
-
-    hoy = datetime.utcnow().date()
-    desde = hoy.isoformat()
-    hasta = (hoy + timedelta(days=1)).isoformat()
-
-    sports_de_interes = {10: "Soccer", 22: "Handball", 23: "Volleyball"}
-    url = f"{ODDSPAPI_BASE}/fixtures"
-    params = {"apiKey": ODDSPAPI_API_KEY, "from": desde, "to": hasta}
-
-    try:
-        respuesta = requests.get(url, params=params, timeout=20)
-        if respuesta.status_code != 200:
-            return
-        fixtures = respuesta.json()
-    except Exception as e:
-        print(f"Error de conexión con OddsPapi: {e}", flush=True)
-        return
-
-    for fixture in fixtures:
-        sport_id = fixture.get("sportId")
-        if sport_id not in sports_de_interes:
-            continue
-
-        fixture_id = fixture.get("fixtureId")
-        torneo = fixture.get("tournamentName", "Torneo Desconocido")
-        local = fixture.get("participant1Name", "Local")
-        visitante = fixture.get("participant2Name", "Visitante")
-        status_name = fixture.get("statusName", "")
-
-        fecha_str = fixture.get("startTime", "")
-        if fecha_str:
-            fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00")).replace(tzinfo=None)
-            fecha_arg = fecha_utc - timedelta(hours=3)
-            horario_formateado = fecha_arg.strftime("%d/%m/%Y %H:%M hs (ARG)")
-        else:
-            horario_formateado = "A confirmar"
-
-        if status_name == "Live":
-            estado = "🔴 *EN VIVO / EN JUEGO*"
-        elif status_name == "Cancelled":
-            continue
-        else:
-            estado = "📅 *PRÓXIMO PARTIDO*"
-
-        evaluar_y_notificar(
-            fuente="oddspapi",
-            id_externo=fixture_id,
-            deporte=sports_de_interes[sport_id],
-            torneo=torneo,
-            local=local,
-            visitante=visitante,
-            horario_formateado=horario_formateado,
-            estado=estado,
-        )
-
-
-def revisar_highlightly():
-    if not HIGHLIGHTLY_API_KEY:
-        return
-
-    headers = {"x-rapidapi-key": HIGHLIGHTLY_API_KEY}
-    hoy = datetime.utcnow().date()
-    fechas = [hoy.isoformat(), (hoy + timedelta(days=1)).isoformat()]
-
-    for nombre_deporte, base_url in HIGHLIGHTLY_SPORTS.items():
-        for fecha in fechas:
-            url = f"{base_url}/matches"
-            params = {"date": fecha, "timezone": "America/Argentina/Buenos_Aires"}
-
-            try:
-                respuesta = requests.get(url, headers=headers, params=params, timeout=20)
-                if respuesta.status_code != 200:
-                    continue
-                data = respuesta.json().get("data", [])
-            except Exception as e:
-                print(f"Error de conexión con Highlightly ({nombre_deporte}): {e}", flush=True)
-                continue
-
-            for partido in data:
-                match_id = partido.get("id")
-                torneo = partido.get("league", {}).get("name", "Torneo Desconocido")
-                local = partido.get("homeTeam", {}).get("name", "Local")
-                visitante = partido.get("awayTeam", {}).get("name", "Visitante")
-                descripcion_estado = partido.get("state", {}).get("description", "")
-
-                if descripcion_estado in HIGHLIGHTLY_ESTADOS_FINALIZADOS:
-                    continue
-
-                fecha_str = partido.get("date", "")
-                if fecha_str:
-                    fecha_utc = datetime.fromisoformat(fecha_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                    fecha_arg = fecha_utc - timedelta(hours=3)
-                    horario_formateado = fecha_arg.strftime("%d/%m/%Y %H:%M hs (ARG)")
-                else:
-                    horario_formateado = "A confirmar"
-
-                estado = "📅 *PRÓXIMO PARTIDO*" if descripcion_estado == "Not started" else "🔴 *EN VIVO / EN JUEGO*"
-
-                evaluar_y_notificar(
-                    fuente="highlightly",
-                    id_externo=match_id,
-                    deporte=nombre_deporte,
-                    torneo=torneo,
-                    local=local,
-                    visitante=visitante,
-                    horario_formateado=horario_formateado,
-                    estado=estado,
+            if hay_mismatch:
+                detalles_txt = "\n".join([f"• {a}" for a in alertas])
+                mensaje = (
+                    f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
+                    f"Status: {estado}\n"
+                    f"🏅 *Deporte:* {deporte_nombre}\n"
+                    f"🏆 *Competición:* {competicion}\n"
+                    f"⚔️ *Encuentro:* {nom_loc} vs {nom_vis}\n"
+                    f"🕒 *Horario:* {hora_arg}\n\n"
+                    f"📊 *La Clave del Mismatch:*\n{detalles_txt}\n\n"
+                    f"🎯 *Mercado Sugerido:* {pick}\n"
+                    f"🔥 *Confianza:* Alta"
                 )
+                enviar_telegram(mensaje)
+                print(f"-> ¡MISMATCH NOTIFICADO! ({deporte_nombre}): {nom_loc} vs {nom_vis}", flush=True)
+
+            partidos_notificados.add(id_unico)
+            guardar_notificados(partidos_notificados)
 
 
 if __name__ == "__main__":
-    print("Radar Femenino Inteligente (Sniper Mismatches) desplegado en Render...", flush=True)
-    enviar_telegram("🤖 *Radar Analista Femenino Activado:* Filtrando exclusivamente mismatches reales.")
+    print("Radar Cuantitativo Multideporte Femenino 360° desplegado...", flush=True)
+    enviar_telegram("🤖 *Radar Femenino 360° Cuantitativo Activado:* Monitoreando 14 deportes con motor de triangulación, tablas y forma vigente.")
 
     while True:
-        ahora_ts = time.time()
-
-        if ahora_ts - ultimo_check_oddspapi >= INTERVALO_ODDSPAPI:
-            revisar_oddspapi()
-            ultimo_check_oddspapi = ahora_ts
-
-        if ahora_ts - ultimo_check_highlightly >= INTERVALO_HIGHLIGHTLY:
-            revisar_highlightly()
-            ultimo_check_highlightly = ahora_ts
-
-        revisar_partidos_nuevos()
+        try:
+            ejecutar_barrido_radar()
+        except Exception as e:
+            print(f"Error en ciclo de barrido: {e}", flush=True)
 
         time.sleep(INTERVALO_REVISION)
