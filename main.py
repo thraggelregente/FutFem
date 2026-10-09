@@ -139,6 +139,7 @@ def es_partido_femenino_valido(nombre_torneo, equipo1, equipo2):
 def analizar_mismatch_ia(deporte, torneo, local, visitante):
     """
     Analiza con Gemini y búsqueda web si hay un desbalance deportivo real.
+    Incluye reintentos si se alcanza el límite por minuto (429).
     """
     if not ai_client:
         return None
@@ -172,28 +173,37 @@ def analizar_mismatch_ia(deporte, torneo, local, visitante):
     }}
     """
 
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-3.8-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                tools=[types.Tool(google_search=types.GoogleSearch())]
+    for intento in range(3):
+        try:
+            response = ai_client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    tools=[types.Tool(google_search=types.GoogleSearch())]
+                )
             )
-        )
-        texto = (response.text or "").strip()
-        if "NO_MISMATCH" in texto:
-            return None
+            texto = (response.text or "").strip()
+            if "NO_MISMATCH" in texto:
+                return "PAREJO"
 
-        if "```json" in texto:
-            texto = texto.split("```json")[1].split("```")[0].strip()
-        elif "```" in texto:
-            texto = texto.split("```")[1].split("```")[0].strip()
+            if "```json" in texto:
+                texto = texto.split("```json")[1].split("```")[0].strip()
+            elif "```" in texto:
+                texto = texto.split("```")[1].split("```")[0].strip()
 
-        return json.loads(texto)
-    except Exception as e:
-        print(f"Error en análisis IA ({local} vs {visitante}): {e}", flush=True)
-        return None
+            return json.loads(texto)
+
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                print(f"Límite de tasa alcanzado. Esperando 12s para reintentar ({local} vs {visitante})...", flush=True)
+                time.sleep(12)
+            else:
+                print(f"Error en análisis IA ({local} vs {visitante}): {e}", flush=True)
+                return None
+
+    return None
 
 
 def evaluar_y_notificar(fuente, id_externo, deporte, torneo, local, visitante, horario_formateado, estado):
@@ -208,15 +218,24 @@ def evaluar_y_notificar(fuente, id_externo, deporte, torneo, local, visitante, h
 
     print(f"[{datetime.now().strftime('%H:%M')}] Evaluando ({deporte}): {local} vs {visitante}...", flush=True)
 
+    # Pausa de 4 segundos antes de consultar para respetar el límite de peticiones por minuto
+    time.sleep(4)
+
     analisis = analizar_mismatch_ia(deporte, torneo, local, visitante)
 
-    # Si es parejo, se marca en persistencia para no volver a gastar llamada
-    if not analisis or not analisis.get("hay_mismatch"):
+    # Si dio error de API/conexión, no se marca para reintentar en el próximo ciclo
+    if analisis is None:
+        print(f"-> Salteado temporalmente por error de API: {local} vs {visitante}", flush=True)
+        return False
+
+    # Si la IA determinó que es parejo
+    if analisis == "PAREJO" or not analisis.get("hay_mismatch"):
         partidos_notificados.add(id_unico)
         guardar_notificados(partidos_notificados)
         print(f"-> Descartado (parejo / sin mismatch): {local} vs {visitante}", flush=True)
         return False
 
+    # Mismatch confirmado
     mensaje = (
         f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
         f"Status: {estado}\n"
