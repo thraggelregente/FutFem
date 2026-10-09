@@ -31,7 +31,7 @@ def iniciar_servidor_web():
 Thread(target=iniciar_servidor_web, daemon=True).start()
 # -------------------------------------------------------------
 
-# Lectura segura desde las variables de entorno
+# Lectura segura desde variables de entorno
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHAT_ID_GRUPO = os.environ.get("CHAT_ID_GRUPO")
@@ -40,7 +40,7 @@ ODDSPAPI_API_KEY = os.environ.get("ODDSPAPI_API_KEY")
 HIGHLIGHTLY_API_KEY = os.environ.get("HIGHLIGHTLY_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Inicializar cliente Gemini
+# Inicialización de cliente Gemini
 ai_client = None
 if GEMINI_API_KEY:
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -103,18 +103,18 @@ def enviar_telegram(mensaje):
         try:
             requests.post(url, json=payload, timeout=10)
         except Exception as e:
-            print(f"Error enviando mensaje a Telegram (chat {destino}): {e}", flush=True)
+            print(f"Error enviando a Telegram (chat {destino}): {e}", flush=True)
 
 
 def es_partido_femenino_valido(nombre_torneo, equipo1, equipo2):
-    """Filtra y asegura que sea deporte femenino (incluye tenis, voley, basket, futbol, etc.)."""
+    """Filtra y asegura que sea 100% deporte femenino (incluye tenis, voley, basket, futbol, etc.)."""
     texto_completo = f"{nombre_torneo} {equipo1} {equipo2}".lower()
 
-    # Si es tenis femenino (WTA, ITF Femenino, etc.)
+    # Si es tenis femenino
     if any(t in texto_completo for t in ["wta", "itf women", "billie jean king"]):
         return True
 
-    # Descartar tenis masculino
+    # Descartar tenis masculino de plano
     if any(t in texto_completo for t in ["atp", "challenger", "davis cup"]):
         return False
 
@@ -138,7 +138,7 @@ def es_partido_femenino_valido(nombre_torneo, equipo1, equipo2):
 
 def analizar_mismatch_ia(deporte, torneo, local, visitante):
     """
-    Analiza con Gemini y búsqueda web si hay un desbalance real según forma y jerarquía deportiva.
+    Analiza con Gemini y búsqueda web si hay un desbalance deportivo real.
     """
     if not ai_client:
         return None
@@ -146,28 +146,28 @@ def analizar_mismatch_ia(deporte, torneo, local, visitante):
     ahora_str = datetime.now().strftime("%Y-%m-%d")
     prompt = f"""
     Eres un Analista de Mismatches Multideporte de Élite especializado EXCLUSIVAMENTE en Deporte Femenino.
-    Fecha actual del sistema: {ahora_str}.
+    Fecha actual: {ahora_str}.
 
     OBJETIVO:
-    Determina si existe un DESEQUILIBRIO EXTREMO / ASIMETRÍA TÁCTICA clara entre:
+    Determina si existe un DESEQUILIBRIO EXTREMO / ASIMETRÍA CLARA entre:
     - Deporte: {deporte}
     - Competición: {torneo}
     - Encuentro: {local} vs {visitante}
 
     JERARQUÍA DE ANÁLISIS:
-    1. FORMA ACTUAL (MANDATORIO): Busca la racha de la temporada actual y últimos partidos. Si un dato es viejo, descártalo.
+    1. FORMA ACTUAL (MANDATORIO): Racha vigente y nivel en la temporada actual. Si un dato es viejo, descártalo.
     2. CONTEXTO RECIENTE: H2H de los últimos 12 meses.
-    3. FACTORES CRÍTICOS:
+    3. FACTORES DETERMINANTES:
        - Tenis: Wild Card (WC) sin ranking / amateur vs jugadora profesional activa.
-       - Vóley/Basket/Handball/Fútbol: Puntero vs Colista hundido, diferencia abismal de categorías (1ra vs 3ra/regional), o bajas determinantes.
+       - Vóley/Basket/Handball/Fútbol: Puntero vs Colista hundido, diferencia de categoría en copas, o brechas técnicas abismales.
 
     REGLA DE SALIDA:
-    - Si el partido es parejo, disputado o no hay asimetría clara, responde EXACTAMENTE: NO_MISMATCH
+    - Si el partido es parejo, disputado o sin mismatch evidente, responde EXACTAMENTE: NO_MISMATCH
     - Si HAY mismatch claro, responde ÚNICAMENTE en JSON con esta estructura:
     {{
       "hay_mismatch": true,
       "resumen_clave": "Explicación concreta de 2 líneas sobre la asimetría y forma actual",
-      "mercado_sugerido": "Pick recomendado (ej: Handicap -2.5 sets, Under X goles/puntos, 2-0 Sets, etc.)",
+      "mercado_sugerido": "Pick recomendado (ej: Handicap -2.5 sets, Under X goles/puntos, Sets 2-0, etc.)",
       "confianza": "Alta / Muy Alta"
     }}
     """
@@ -185,7 +185,6 @@ def analizar_mismatch_ia(deporte, torneo, local, visitante):
         if "NO_MISMATCH" in texto:
             return None
 
-        # Limpiar posibles delimitadores de bloque json
         if "```json" in texto:
             texto = texto.split("```json")[1].split("```")[0].strip()
         elif "```" in texto:
@@ -204,23 +203,20 @@ def evaluar_y_notificar(fuente, id_externo, deporte, torneo, local, visitante, h
     if id_unico in partidos_notificados:
         return False
 
-    # 1. Filtro estricto femenino
     if not es_partido_femenino_valido(torneo, local, visitante):
         return False
 
-    print(f"[{datetime.now().strftime('%H:%M')}] Evaluando potencial mismatch ({deporte}): {local} vs {visitante}...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M')}] Evaluando ({deporte}): {local} vs {visitante}...", flush=True)
 
-    # 2. Análisis con Gemini IA
     analisis = analizar_mismatch_ia(deporte, torneo, local, visitante)
 
-    # Si no hay mismatch contundente, se marca como procesado para no volver a gastar llamada
+    # Si es parejo, se marca en persistencia para no volver a gastar llamada
     if not analisis or not analisis.get("hay_mismatch"):
         partidos_notificados.add(id_unico)
         guardar_notificados(partidos_notificados)
-        print(f"-> Descartado por parejo / sin mismatch: {local} vs {visitante}", flush=True)
+        print(f"-> Descartado (parejo / sin mismatch): {local} vs {visitante}", flush=True)
         return False
 
-    # 3. Formatear reporte de valor
     mensaje = (
         f"🚨 *MISMATCH DETECTADO — RADAR FEMENINO*\n\n"
         f"Status: {estado}\n"
@@ -438,7 +434,6 @@ if __name__ == "__main__":
             revisar_highlightly()
             ultimo_check_highlightly = ahora_ts
 
-        # Monitoreo The Odds API si tenés key cargada
         revisar_partidos_nuevos()
 
         time.sleep(INTERVALO_REVISION)
