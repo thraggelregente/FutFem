@@ -1,32 +1,21 @@
 """
 main.py
-Radar Mismatch Multideporte Femenino 360° — Grado Institucional
-- 14 Deportes vía Sofascore
-- Cuadros oficiales ITF World Tennis Tour
-- Ascenso y formativas vía BeSoccer
-- Análisis in-game (Tennis Abstract & ScoreBing)
-- Smart Money y líneas institucionales de Pinnacle
-- Monitor ligero de novedades de plantel (RSS / X)
+Radar Mismatch Multideporte Femenino 360° — Resiliente
+- Servidor Web Fantasma prioritario (Garantiza estado LIVE en Render).
+- Importación segura de módulos para evitar cierres prematuros.
 """
 
-import requests
-import time
-import re
 import os
+import sys
+import time
 import json
+import re
+import requests
 from datetime import datetime, timedelta
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Módulos internos del sistema
-import motor_mismatches
-import fuentes_alternativas
-import tracker_cuotas_smart
-import conector_besoccer
-import metricas_profundas
-import monitor_noticias
-
-# --- SERVIDOR WEB FANTASMA (Render Web Service) ---
+# --- 1. SERVIDOR WEB FANTASMA (SE INICIA ANTES QUE CUALQUIER OTRA COSA) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -46,13 +35,64 @@ def iniciar_servidor_web():
     servidor.serve_forever()
 
 Thread(target=iniciar_servidor_web, daemon=True).start()
-# --------------------------------------------------
+# --------------------------------------------------------------------------
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CHAT_ID_GRUPO = os.environ.get("CHAT_ID_GRUPO")
 
-INTERVALO_REVISION = 1800  # 30 minutos por barrido
+def enviar_telegram(mensaje):
+    if not TELEGRAM_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    destinos = [c for c in (CHAT_ID, CHAT_ID_GRUPO) if c]
+
+    for d in destinos:
+        payload = {"chat_id": d, "text": mensaje, "parse_mode": "Markdown"}
+        try:
+            requests.post(url, json=payload, timeout=10)
+        except Exception:
+            pass
+
+# --- 2. IMPORTACIÓN DEFENSIVA DE MÓDULOS ---
+try:
+    import motor_mismatches
+except Exception as e:
+    print(f"ERROR cargando motor_mismatches: {e}", flush=True)
+    enviar_telegram(f"⚠️ Error cargando motor_mismatches: {e}")
+
+try:
+    import fuentes_alternativas
+except Exception as e:
+    fuentes_alternativas = None
+    print(f"Aviso: fuentes_alternativas no disponible: {e}", flush=True)
+
+try:
+    import tracker_cuotas_smart
+except Exception as e:
+    tracker_cuotas_smart = None
+    print(f"Aviso: tracker_cuotas_smart no disponible: {e}", flush=True)
+
+try:
+    import conector_besoccer
+except Exception as e:
+    conector_besoccer = None
+    print(f"Aviso: conector_besoccer no disponible: {e}", flush=True)
+
+try:
+    import metricas_profundas
+except Exception as e:
+    metricas_profundas = None
+    print(f"Aviso: metricas_profundas no disponible: {e}", flush=True)
+
+try:
+    import monitor_noticias
+except Exception as e:
+    monitor_noticias = None
+    print(f"Aviso: monitor_noticias no disponible: {e}", flush=True)
+
+
+INTERVALO_REVISION = 1800  # 30 minutos
 ARCHIVO_NOTIFICADOS = "notificados.json"
 
 DEPORTES_RADAR = {
@@ -87,7 +127,6 @@ HEADERS_SOFASCORE = {
 }
 
 
-# ---------- PERSISTENCIA ----------
 def cargar_notificados():
     if os.path.exists(ARCHIVO_NOTIFICADOS):
         try:
@@ -107,20 +146,6 @@ def guardar_notificados(notificados):
 partidos_notificados = cargar_notificados()
 
 
-def enviar_telegram(mensaje):
-    if not TELEGRAM_TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    destinos = [c for c in (CHAT_ID, CHAT_ID_GRUPO) if c]
-
-    for d in destinos:
-        payload = {"chat_id": d, "text": mensaje, "parse_mode": "Markdown"}
-        try:
-            requests.post(url, json=payload, timeout=10)
-        except Exception:
-            pass
-
-
 def es_deporte_femenino_valido(torneo, local, visita):
     texto = f"{torneo} {local} {visita}".lower()
     if any(k in texto for k in ["wta", "itf women", "billie jean king"]):
@@ -129,7 +154,7 @@ def es_deporte_femenino_valido(torneo, local, visita):
         return False
     if any(re.search(rf"\b{kw}\b", texto) for kw in KEYWORDS_FEMENINAS):
         return True
-    if re.search(r'\((w\vert{}f)\)', texto):
+    if re.search(r'\((w|f)\)', texto):
         return True
     return False
 
@@ -221,34 +246,30 @@ def obtener_h2h_sofascore(event_id):
 
 
 def enriquecer_y_enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_arg, estado, alertas_base, pick_base):
-    """
-    Agrega capas institucionales antes de enviar a Telegram:
-    - Verificación contra Pinnacle y Smart Money
-    - Presión táctica / Superficie
-    - Novedades de plantel en redes
-    """
     detalles = list(alertas_base)
 
-    # 1. Presión ofensiva (Fútbol) o Superficie (Tenis)
-    if deporte == "Soccer":
-        stats_presion = metricas_profundas.obtener_presion_ofensiva_futbol(nom_loc)
-        if stats_presion.get("alta_presion"):
-            detalles.append(
-                f"Presión Ofensiva ScoreBing: +{stats_presion['prom_corners_favor']} córners a favor vs {stats_presion['prom_corners_contra']} concedidos"
-            )
-    elif deporte == "Tennis":
-        perfil_sup = metricas_profundas.consultar_perfil_tenis_abstract(nom_loc)
-        if perfil_sup.get("es_vulnerable_superficie"):
-            detalles.append(f"⚠️ Advertencia Superficie: Win rate bajo en {perfil_sup['superficie']} ({perfil_sup['efectividad_superficie']})")
+    if metricas_profundas:
+        if deporte == "Soccer":
+            stats_p = metricas_profundas.obtener_presion_ofensiva_futbol(nom_loc)
+            if stats_p.get("alta_presion"):
+                detalles.append(
+                    f"Presión ScoreBing: +{stats_p['prom_corners_favor']} córners a favor vs {stats_p['prom_corners_contra']} recibidos"
+                )
+        elif deporte == "Tennis":
+            perfil_s = metricas_profundas.consultar_perfil_tenis_abstract(nom_loc)
+            if perfil_s.get("es_vulnerable_superficie"):
+                detalles.append(f"⚠️ Advertencia Superficie: Win rate bajo en {perfil_s['superficie']} ({perfil_s['efectividad_superficie']})")
 
-    # 2. Búsqueda de novedades de plantel de última hora
-    novedades = monitor_noticias.buscar_novedades_partido(nom_loc, nom_vis)
-    if novedades.get("alerta_novedad"):
-        detalles.append(f"Último Momento: {novedades['fragmento']}")
+    if monitor_noticias:
+        novedades = monitor_noticias.buscar_novedades_partido(nom_loc, nom_vis)
+        if novedades.get("alerta_novedad"):
+            detalles.append(f"Último Momento: {novedades['fragmento']}")
 
-    # 3. Verificación de Cuota / Smart Money en Pinnacle
-    analisis_odds = tracker_cuotas_smart.analizar_mercado_evento(nom_loc)
-    estado_mercado = analisis_odds.get("resumen") if analisis_odds.get("disponible") else "Línea abierta en bookies locales"
+    estado_mercado = "Línea abierta en bookies locales"
+    if tracker_cuotas_smart:
+        analisis_odds = tracker_cuotas_smart.analizar_mercado_evento(nom_loc)
+        if analisis_odds.get("disponible"):
+            estado_mercado = analisis_odds.get("resumen")
 
     detalles_txt = "\n".join([f"• {d}" for d in detalles])
 
@@ -270,35 +291,156 @@ def enriquecer_y_enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_arg, esta
 
 def ejecutar_barrido_radar():
     global partidos_notificados
-    print(f"[{datetime.now().strftime('%H:%M')}] Iniciando barrido Radar Femenino 360°...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M')}] Ejecutando barrido Radar Femenino 360°...", flush=True)
 
-    # 1. BARRIDO ITF WORLD TENNIS TOUR (Draws Oficiales)
-    mismatches_itf = fuentes_alternativas.obtener_mismatches_itf()
-    for m in mismatches_itf:
-        if m["id"] in partidos_notificados:
+    # 1. ITF
+    if fuentes_alternativas:
+        mismatches_itf = fuentes_alternativas.obtener_mismatches_itf()
+        for m in mismatches_itf:
+            if m["id"] in partidos_notificados:
+                continue
+
+            enriquecer_y_enviar_alerta(
+                deporte="Tennis",
+                torneo=m["torneo"],
+                nom_loc=m["local"],
+                nom_vis=m["visita"],
+                hora_arg=m["horario"],
+                estado="🟢 *PRE*",
+                alertas_base=[m["detalle"]],
+                pick_base="Under Games / Hándicap de Juegos"
+            )
+            partidos_notificados.add(m["id"])
+            guardar_notificados(partidos_notificados)
+
+    # 2. BeSoccer
+    if conector_besoccer:
+        partidos_asc = conector_besoccer.obtener_partidos_ascenso_besoccer()
+        for p_asc in partidos_asc:
+            if p_asc["id"] in partidos_notificados:
+                continue
+
+            if p_asc.get("tiene_alineaciones"):
+                rotacion = conector_besoccer.verificar_rotacion_plantel(p_asc["id"].replace("besoccer_", ""))
+                if rotacion.get("alerta_rotacion"):
+                    enriquecer_y_enviar_alerta(
+                        deporte="Soccer",
+                        torneo=p_asc["torneo"],
+                        nom_loc=p_asc["local"],
+                        nom_vis=p_asc["visita"],
+                        hora_arg=p_asc["horario"],
+                        estado="🟢 *PRE*",
+                        alertas_base=["Rotación masiva detectada en alineación confirmada"],
+                        pick_base="Hándicap / Doble Oportunidad Rival"
+                    )
+                    partidos_notificados.add(p_asc["id"])
+                    guardar_notificados(partidos_notificados)
+
+    # 3. Sofascore (14 Deportes)
+    for slug, deporte_nombre in DEPORTES_RADAR.items():
+        eventos = obtener_partidos_sofascore(slug)
+        if not eventos:
             continue
 
-        enriquecer_y_enviar_alerta(
-            deporte="Tennis",
-            torneo=m["torneo"],
-            nom_loc=m["local"],
-            nom_vis=m["visita"],
-            hora_arg=m["horario"],
-            estado="🟢 *PRE*",
-            alertas_base=[m["detalle"]],
-            pick_base="Under Games / Hándicap de Juegos"
-        )
-        partidos_notificados.add(m["id"])
-        guardar_notificados(partidos_notificados)
+        for ev in eventos:
+            event_id = ev.get("id")
+            if not event_id:
+                continue
 
-    # 2. BARRIDO ASCENSO Y FORMATIVAS (BeSoccer)
-    partidos_ascenso = conector_besoccer.obtener_partidos_ascenso_besoccer()
-    for p_asc in partidos_ascenso:
-        if p_asc["id"] in partidos_notificados:
-            continue
+            id_unico = f"sofa_{event_id}"
+            if id_unico in partidos_notificados:
+                continue
 
-        if p_asc.get("tiene_alineaciones"):
-            rotacion = conector_besoccer.verificar_rotacion_plantel(p_asc["id"].replace("besoccer_", ""))
-            if rotacion.get("alerta_rotacion"):
-                alerta_txt = f"Rotación masiva confirmada en BeSoccer (presencia de dorsales de reserva/juveniles)"
-                enriquecer_y_enviar_
+            torneo_obj = ev.get("tournament", {})
+            torneo_nom = torneo_obj.get("name", "Torneo")
+            cat_nom = torneo_obj.get("category", {}).get("name", "")
+            competicion = f"{torneo_nom} ({cat_nom})" if cat_nom else torneo_nom
+
+            local_obj = ev.get("homeTeam", {})
+            visita_obj = ev.get("awayTeam", {})
+            nom_loc = local_obj.get("name", "Local")
+            nom_vis = visita_obj.get("name", "Visitante")
+            id_loc = local_obj.get("id")
+            id_vis = visita_obj.get("id")
+
+            if not es_deporte_femenino_valido(competicion, nom_loc, nom_vis):
+                continue
+
+            start_ts = ev.get("startTimestamp", 0)
+            hora_arg = (datetime.fromtimestamp(start_ts) - timedelta(hours=0)).strftime("%H:%M hs (ARG)")
+            estado = "🔴 *EN VIVO (LIVE)*" if ev.get("status", {}).get("type") == "inprogress" else "🟢 *PRE*"
+
+            if deporte_nombre == "Tennis":
+                rank_loc = local_obj.get("ranking")
+                rank_vis = visita_obj.get("ranking")
+                hay_wc, detalle_wc = motor_mismatches.evaluar_mismatch_tenis(nom_loc, nom_vis, rank_loc, rank_vis)
+
+                if hay_wc:
+                    pick = motor_mismatches.sugerir_mercado("Tennis", [detalle_wc], es_favorito_local=True)
+                    enriquecer_y_enviar_alerta(
+                        deporte="Tennis",
+                        torneo=competicion,
+                        nom_loc=nom_loc,
+                        nom_vis=nom_vis,
+                        hora_arg=hora_arg,
+                        estado=estado,
+                        alertas_base=[detalle_wc],
+                        pick_base=pick
+                    )
+                partidos_notificados.add(id_unico)
+                guardar_notificados(partidos_notificados)
+                continue
+
+            # Deportes de equipo
+            tourn_id = torneo_obj.get("uniqueTournament", {}).get("id")
+            season_id = ev.get("season", {}).get("id")
+
+            tabla = obtener_tabla_torneo(tourn_id, season_id)
+            tabla_eval = motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis)
+
+            hist_loc = obtener_ultimos_partidos(id_loc)
+            hist_vis = obtener_ultimos_partidos(id_vis)
+
+            perf_loc = motor_mismatches.evaluar_rendimiento_reciente(hist_loc, id_loc)
+            perf_vis = motor_mismatches.evaluar_rendimiento_reciente(hist_vis, id_vis)
+
+            triangs = motor_mismatches.triangular_rivales(hist_loc, id_loc, hist_vis, id_vis)
+            h2h_raw = obtener_h2h_sofascore(event_id)
+            h2h_eval = motor_mismatches.analizar_h2h_reciente(h2h_raw, id_loc, id_vis)
+
+            hay_mismatch, alertas, pick = motor_mismatches.evaluar_mismatch(
+                deporte=deporte_nombre,
+                perf_local=perf_loc,
+                perf_visita=perf_vis,
+                triangulaciones=triangs,
+                h2h=h2h_eval,
+                tabla_local_visita=tabla_eval
+            )
+
+            if hay_mismatch:
+                enriquecer_y_enviar_alerta(
+                    deporte=deporte_nombre,
+                    torneo=competicion,
+                    nom_loc=nom_loc,
+                    nom_vis=nom_vis,
+                    hora_arg=hora_arg,
+                    estado=estado,
+                    alertas_base=alertas,
+                    pick_base=pick
+                )
+
+            partidos_notificados.add(id_unico)
+            guardar_notificados(partidos_notificados)
+
+
+if __name__ == "__main__":
+    print("Radar Cuantitativo Multideporte Femenino 360° desplegado...", flush=True)
+    enviar_telegram("🤖 *Radar Femenino 360° Activo:* Orquestador protegido contra cierres.")
+
+    while True:
+        try:
+            ejecutar_barrido_radar()
+        except Exception as e:
+            print(f"Error en ciclo de barrido: {e}", flush=True)
+
+        time.sleep(INTERVALO_REVISION)
