@@ -174,7 +174,7 @@ def analizar_mismatch_ia(deporte, torneo, local, visitante):
 
     try:
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.8-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.2,
