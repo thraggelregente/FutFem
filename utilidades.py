@@ -24,12 +24,11 @@ try:
     from zoneinfo import ZoneInfo
     TZ_ARG = ZoneInfo("America/Argentina/Buenos_Aires")
 except Exception:
-    # Sin tzdata: Argentina es UTC-3 todo el año (no tiene horario de verano).
     TZ_ARG = timezone(timedelta(hours=-3))
 
 try:
     from curl_cffi import requests as curl_requests
-except Exception as _e_import_curl:  # no instalado / no compatible (p. ej. Termux)
+except Exception as _e_import_curl:
     curl_requests = None
     _ERROR_IMPORT_CURL = f"{type(_e_import_curl).__name__}: {_e_import_curl}"
 else:
@@ -44,7 +43,6 @@ def ahora_arg():
 
 
 def fecha_arg(dias=0):
-    """Fecha YYYY-MM-DD en hora argentina (con desplazamiento opcional en días)."""
     return (ahora_arg() + timedelta(days=dias)).strftime("%Y-%m-%d")
 
 
@@ -65,7 +63,7 @@ def log(msg):
 
 
 if curl_requests is None:
-    log(f"[http] curl_cffi no disponible ({_ERROR_IMPORT_CURL}); uso requests (sin huella TLS de navegador)")
+    log(f"[http] curl_cffi no disponible ({_ERROR_IMPORT_CURL}); uso requests")
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +78,6 @@ HEADERS_NAVEGADOR = {
     "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
 }
 
-# Con curl_cffi el User-Agent y los sec-ch-* los pone la propia huella de Chrome.
-# Si mandamos otro UA (p. ej. Android) se contradice con el TLS y nos delata.
 _HEADERS_QUE_PONE_CURL = {"user-agent", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}
 
 ESTADISTICAS = defaultdict(lambda: defaultdict(int))
@@ -100,7 +96,6 @@ def _registrar(fuente, codigo):
 
 
 def hay_bloqueo(fuente, minimo=3):
-    """True si la fuente devolvió >= `minimo` respuestas y ninguna fue 200."""
     codigos = ESTADISTICAS.get(fuente)
     if not codigos:
         return False
@@ -108,13 +103,11 @@ def hay_bloqueo(fuente, minimo=3):
 
 
 def proxies_desde_env(nombre_var):
-    """Lee una variable de entorno con la URL del proxy (http://user:pass@host:puerto)."""
     url = (os.environ.get(nombre_var) or "").strip()
     return {"http": url, "https": url} if url else None
 
 
 def _pedir(url, headers, params, timeout, proxies, fuente):
-    """Intenta con curl_cffi (huella Chrome) y, si no se puede, con requests."""
     base = headers or HEADERS_NAVEGADOR
     if curl_requests is not None:
         try:
@@ -125,7 +118,7 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
             )
         except Exception as e_curl:
             clave = (fuente, type(e_curl).__name__)
-            if clave not in _avisos_curl:  # una vez por tipo de error, no en cada pedido
+            if clave not in _avisos_curl:
                 _avisos_curl.add(clave)
                 log(f"[{fuente}] curl_cffi falló ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
     try:
@@ -161,7 +154,6 @@ def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, i
 
 
 def get_texto(url, fuente, headers=None, params=None, timeout=15):
-    """Igual que get_json pero devuelve el texto crudo (CSV, RSS, etc.)."""
     try:
         r = requests.get(url, headers=headers or HEADERS_NAVEGADOR, params=params, timeout=timeout)
     except requests.RequestException as e:
@@ -185,7 +177,6 @@ class CacheTTL:
         self._datos = {}
 
     def get(self, clave):
-        """Devuelve (acierto, valor). Permite cachear también None / listas vacías."""
         item = self._datos.get(clave)
         if item and (time.time() - item[0]) < self.ttl:
             return True, item[1]
@@ -202,7 +193,7 @@ class CacheTTL:
 
 
 # ---------------------------------------------------------------------------
-# PERSISTENCIA (Upstash Redis gratis, o archivo en DATA_DIR / Render Disk)
+# PERSISTENCIA (Upstash Redis o archivo en DATA_DIR)
 # ---------------------------------------------------------------------------
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
@@ -285,7 +276,6 @@ def _parsear_iso(texto):
 
 
 def podar_por_antiguedad(diccionario, dias):
-    """Descarta entradas {clave: iso_timestamp} más viejas que `dias`."""
     limite = datetime.now(timezone.utc) - timedelta(days=dias)
     limpio = {}
     for clave, valor in diccionario.items():
@@ -296,11 +286,6 @@ def podar_por_antiguedad(diccionario, dias):
 
 
 class RegistroVistos:
-    """
-    Partidos ya analizados / notificados. Guarda {id: fecha} y descarta lo viejo
-    para que el archivo no crezca indefinidamente. Lee el formato viejo (lista).
-    """
-
     def __init__(self, nombre, dias_retencion=3):
         self.nombre = nombre
         self.dias = dias_retencion
@@ -353,57 +338,7 @@ def tokens_significativos(texto):
 
 
 def nombres_coinciden(a, b):
-    """
-    True si los nombres son compatibles: los tokens significativos de uno están
-    incluidos en el otro ("Swiatek I." ~ "Iga Swiatek", "Real Madrid W" ~ "Real Madrid").
-    """
     ta, tb = tokens_significativos(a), tokens_significativos(b)
     if not ta or not tb:
         return False
     return ta <= tb or tb <= ta
-# ---------------------------------------------------------------------------
-# PLAYWRIGHT PARA SOFASCORE (Evita bloqueos de Cloudflare)
-# ---------------------------------------------------------------------------
-# En utilidades.py, al final del archivo:
-
-import asyncio
-from playwright.async_api import async_playwright
-
-async def _obtener_json_sofascore_async(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            locale="es-AR",
-            timezone_id="America/Argentina/Buenos_Aires",
-        )
-        page = await context.new_page()
-        try:
-            await page.goto("https://www.sofascore.com/", wait_until="domcontentloaded", timeout=15000)
-            respuesta = await page.evaluate(f"""
-                async () => {{
-                    const res = await fetch("{url}", {{
-                        headers: {{
-                            "Accept": "application/json",
-                            "Referer": "https://www.sofascore.com/"
-                        }}
-                    }});
-                    return await res.json();
-                }}
-            """)
-            await browser.close()
-            return respuesta
-        except Exception as e:
-            log(f"[playwright] Error obteniendo {url}: {type(e).__name__}: {e}")
-            await browser.close()
-            return None
-
-def get_json_sofascore(url):
-    """Wrapper síncrono para usar Playwright desde código síncrono."""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(_obtener_json_sofascore_async(url))
-    except Exception as e:
-        log(f"[playwright] Error en wrapper: {type(e).__name__}: {e}")
-        return None 
