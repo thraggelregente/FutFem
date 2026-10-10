@@ -140,35 +140,28 @@ ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "100"))
 HORAS_VENTANA_PREVIA = 24
 
-# Deportes a analizar (internos). ESPN mapea cada uno a sus ligas.
-DEPORTES_RADAR = ["Soccer", "Basketball", "Volleyball", "Tennis", "Handball", "Rugby"]
+# Deportes con endpoint válido en ESPN (se quitaron vóley, balonmano y rugby
+# porque ESPN no tiene esos slugs accesibles vía API pública).
+DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey"]
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _cache_historial = U.CacheTTL(3 * 3600)
 
 
 # ---------------------------------------------------------------------------
-# FILTRO FEMENINO (por si ESPN devuelve ligas mixtas)
+# FILTRO FEMENINO (simplificado: las ligas de ESPN ya son femeninas)
 # ---------------------------------------------------------------------------
-_RE_FEMENINO_FUERTE = re.compile(r"\b(wta|itf women|billie jean king|wnba|nwsl|wsl)\b")
 _RE_MASCULINO = re.compile(
-    r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile|nba|nfl|nhl|mlb)\b"
+    r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile|nba|nfl|nhl|mlb|mls)\b"
 )
-KEYWORDS_FEMENINAS = [
-    "women", "womens", "wom", "fem", "femenil", "femenino", "femenina", "femení", "feminin",
-    "féminin", "feminine", "femminile", "dames", "frauen", "damen", "ladies",
-]
-_RE_KEYWORDS_FEM = re.compile(r"\b(" + "|".join(re.escape(k) for k in KEYWORDS_FEMENINAS) + r")\b")
 
 
 def es_deporte_femenino_valido(torneo, local, visita):
+    """
+    Como las ligas de DEPORTES_ESPN ya son femeninas por definición,
+    solo bloqueamos si hay evidencia clara de masculino en el texto.
+    """
     texto = f"{torneo} {local} {visita}".lower()
-    if _RE_FEMENINO_FUERTE.search(texto):
-        return True
-    if _RE_KEYWORDS_FEM.search(texto):
-        return True
-    # Nuestras ligas de DEPORTES_ESPN ya son femeninas por definición, así que
-    # si el filtro masculino no matchea, lo aceptamos.
     if _RE_MASCULINO.search(texto):
         return False
     return True
@@ -248,6 +241,19 @@ def _nuevo_stat():
             "analizados": 0, "alertas": 0, "errores": 0}
 
 
+def _parsear_record(rec):
+    """Convierte '12-3' o '12-3-1' en (victorias, derrotas). None si no se puede."""
+    if not rec:
+        return None, None
+    try:
+        partes = re.split(r"[-–]", str(rec).strip())
+        wins = int(partes[0])
+        losses = int(partes[1]) if len(partes) > 1 else 0
+        return wins, losses
+    except Exception:
+        return None, None
+
+
 def _procesar_evento_espn(evento, st):
     """Procesa un evento de ESPN ya normalizado por fuente_espn.py."""
     id_unico = evento["id"]
@@ -261,7 +267,6 @@ def _procesar_evento_espn(evento, st):
         st["no_vigentes"] += 1
         return False
 
-    # Filtrar eventos demasiado lejanos
     ahora_ts = time.time()
     if tipo_estado == "pre" and evento.get("startTimestamp", 0) > ahora_ts + HORAS_VENTANA_PREVIA * 3600:
         st["lejanos"] += 1
@@ -272,7 +277,6 @@ def _procesar_evento_espn(evento, st):
     torneo = evento["torneo"]
     deporte = evento["deporte"]
 
-    # Filtro femenino
     if not es_deporte_femenino_valido(torneo, nom_loc, nom_vis):
         return False
     st["femeninos"] += 1
@@ -300,47 +304,48 @@ def _procesar_evento_espn(evento, st):
         registro.marcar(id_unico)
         return True
 
-    # Deportes de equipo: ESPN no nos da historial profundo, así que
-    # usamos un mismatch basado en el récord (record) que sí nos da ESPN.
+    # Deportes de equipo: usamos récord + ranking de ESPN
     record_loc = evento["local"].get("record") or ""
     record_vis = evento["visita"].get("record") or ""
-
-    # Parsear récord "12-3" -> victorias, derrotas
-    def _parsear_record(rec):
-        try:
-            partes = rec.split("-")
-            wins = int(partes[0])
-            losses = int(partes[1]) if len(partes) > 1 else 0
-            return wins, losses
-        except Exception:
-            return None, None
+    ranking_loc = evento["local"].get("ranking")
+    ranking_vis = evento["visita"].get("ranking")
 
     wl, ll = _parsear_record(record_loc)
     wv, lv = _parsear_record(record_vis)
 
-    if wl is None or wv is None:
-        registro.marcar(id_unico)
-        return True
-
-    total_l = wl + ll
-    total_v = wv + lv
-    if total_l < 5 or total_v < 5:
-        registro.marcar(id_unico)
-        return True
-
-    tasa_l = wl / total_l
-    tasa_v = wv / total_v
-
     favorito = None
     detalle = ""
-    if tasa_l >= 0.65 and tasa_v <= 0.30:
-        favorito = motor_mismatches.LOCAL
-        detalle = (f"Récord: {nom_loc} {record_loc} ({round(tasa_l*100)}% victorias) "
-                   f"vs {nom_vis} {record_vis} ({round(tasa_v*100)}%)")
-    elif tasa_v >= 0.65 and tasa_l <= 0.30:
-        favorito = motor_mismatches.VISITA
-        detalle = (f"Récord: {nom_vis} {record_vis} ({round(tasa_v*100)}% victorias) "
-                   f"vs {nom_loc} {record_loc} ({round(tasa_l*100)}%)")
+
+    # Estrategia 1: récord claro (necesita al menos 3 partidos jugados)
+    if wl is not None and wv is not None:
+        total_l = wl + ll
+        total_v = wv + lv
+        if total_l >= 3 and total_v >= 3:
+            tasa_l = wl / total_l
+            tasa_v = wv / total_v
+            if tasa_l >= 0.60 and tasa_v <= 0.35 and (wl - wv) >= 3:
+                favorito = motor_mismatches.LOCAL
+                detalle = (f"Récord: {nom_loc} {record_loc} ({round(tasa_l*100)}% victorias) "
+                           f"vs {nom_vis} {record_vis} ({round(tasa_v*100)}%)")
+            elif tasa_v >= 0.60 and tasa_l <= 0.35 and (wv - wl) >= 3:
+                favorito = motor_mismatches.VISITA
+                detalle = (f"Récord: {nom_vis} {record_vis} ({round(tasa_v*100)}% victorias) "
+                           f"vs {nom_loc} {record_loc} ({round(tasa_l*100)}%)")
+
+    # Estrategia 2: ranking (útil para NCAA y algunos torneos)
+    if favorito is None and ranking_loc and ranking_vis:
+        try:
+            rl, rv = int(ranking_loc), int(ranking_vis)
+            if rl > 0 and rv > 0:
+                # En rankings, número MENOR es mejor
+                if rl <= 15 and rv >= 50:
+                    favorito = motor_mismatches.LOCAL
+                    detalle = f"Ranking: {nom_loc} #{rl} vs {nom_vis} #{rv}"
+                elif rv <= 15 and rl >= 50:
+                    favorito = motor_mismatches.VISITA
+                    detalle = f"Ranking: {nom_vis} #{rv} vs {nom_loc} #{rl}"
+        except (ValueError, TypeError):
+            pass
 
     if favorito:
         nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis

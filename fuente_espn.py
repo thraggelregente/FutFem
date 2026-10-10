@@ -2,18 +2,18 @@
 fuente_espn.py
 Fuente de datos de ESPN API (pública, sin autenticación, sin Cloudflare).
 
-Deportes soportados y sus "leagues" (slugs) en ESPN:
-- Fútbol femenino: esp.1 (Liga F), eng.1 (WSL), usa.1 (NWSL), etc.
-- Básquet: wnba, nba, etc.
-- Tenis: ATP y WTA (endpoint especial).
-- Fútbol americano: nfl.
-- Hockey: nhl.
-- Béisbol: mlb.
-- Vóley: volleyball (endpoint especial).
-- Balonmano: handball.
-- Rugby: rugby.
-
-La API es pública: https://site.api.espn.com/apis/site/v2/sports/{deporte}/{liga}/scoreboard
+Slugs verificados de ESPN:
+- soccer/esp.1       -> Liga F (España)
+- soccer/eng.1       -> Women's Super League (Inglaterra)
+- soccer/usa.1       -> NWSL (EE.UU.)
+- soccer/ger.1       -> Frauen-Bundesliga (Alemania)
+- soccer/fra.1       -> Division 1 Feminine (Francia)
+- soccer/ita.1       -> Serie A Femminile (Italia)
+- soccer/uefa.weuro  -> UEFA Women's Euro
+- basketball/wnba    -> WNBA
+- tennis/wta         -> WTA (endpoint especial)
+- hockey/womens-college-hockey -> Hockey femenino NCAA
+- rugby/270557       -> Rugby femenino (liga específica)
 """
 
 import time
@@ -21,8 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import utilidades as U
 
-# Mapeo de nuestros deportes internos a los slugs de ESPN
-# Cada entrada: deporte_interno -> {liga_slug: nombre_legible}
+# Mapeo de nuestros deportes internos a los slugs verificados de ESPN
 DEPORTES_ESPN = {
     "Soccer": {
         "esp.1": "Liga F (España)",
@@ -31,47 +30,34 @@ DEPORTES_ESPN = {
         "ger.1": "Frauen-Bundesliga (Alemania)",
         "fra.1": "Division 1 Feminine (Francia)",
         "ita.1": "Serie A Femminile (Italia)",
-        "uefa.weuro": "UEFA Women's Euro",
-        "fifa.wwc": "FIFA Women's World Cup",
     },
     "Basketball": {
         "wnba": "WNBA",
     },
-    "Volleyball": {
-        "volleyball": "Volleyball",
-    },
     "Tennis": {
         "wta": "WTA",
     },
-    "Handball": {
-        "handball": "Handball",
-    },
-    "Rugby": {
-        "rugby": "Rugby",
+    "Ice Hockey": {
+        "womens-college-hockey": "NCAA Women's Hockey",
     },
 }
 
-# Caché para no repetir peticiones en el mismo ciclo
-_cache_scoreboard = U.CacheTTL(30 * 60)  # 30 min
+# Mapeo a slugs de deporte
+_DEPORTE_ESPN = {
+    "Soccer": "soccer",
+    "Basketball": "basketball",
+    "Tennis": "tennis",
+    "Ice Hockey": "hockey",
+}
+
+_cache_scoreboard = U.CacheTTL(30 * 60)
 
 
 def _deporte_espn_para(deporte_interno):
-    """Devuelve el slug del deporte para la URL de ESPN."""
-    return {
-        "Soccer": "soccer",
-        "Basketball": "basketball",
-        "Volleyball": "volleyball",
-        "Tennis": "tennis",
-        "Handball": "handball",
-        "Rugby": "rugby",
-    }.get(deporte_interno)
+    return _DEPORTE_ESPN.get(deporte_interno)
 
 
 def _obtener_scoreboard(deporte_espn, liga, fecha_yyyymmdd):
-    """
-    Consulta el scoreboard de ESPN para una fecha (YYYYMMDD).
-    Devuelve la lista de eventos o [] si falla.
-    """
     clave = (deporte_espn, liga, fecha_yyyymmdd)
     hit, valor = _cache_scoreboard.get(clave)
     if hit:
@@ -87,11 +73,23 @@ def _obtener_scoreboard(deporte_espn, liga, fecha_yyyymmdd):
     return eventos
 
 
+def _extraer_equipo(obj):
+    team = obj.get("team") or {}
+    record = None
+    records = obj.get("records") or []
+    if records:
+        record = records[0].get("summary")
+    return {
+        "id": team.get("id"),
+        "nombre": team.get("displayName") or team.get("name") or "?",
+        "abrev": team.get("abbreviation"),
+        "ranking": (obj.get("curatedRank") or {}).get("current"),
+        "record": record,
+        "logo": (team.get("logo") or None),
+    }
+
+
 def _normalizar_evento_espn(evento, deporte_interno, liga_nombre):
-    """
-    Convierte un evento de ESPN al formato interno del radar.
-    Formato interno: {id, deporte, torneo, local, visita, horario, estado, startTimestamp, favorito_hint}
-    """
     competiciones = evento.get("competitions", []) or []
     if not competiciones:
         return None
@@ -101,28 +99,15 @@ def _normalizar_evento_espn(evento, deporte_interno, liga_nombre):
     if len(competidores) < 2:
         return None
 
-    # ESPN marca home/away con "homeAway": "home" | "away"
     local_obj = next((c for c in competidores if c.get("homeAway") == "home"), None)
     visita_obj = next((c for c in competidores if c.get("homeAway") == "away"), None)
-
-    # Si no hay home/away, tomamos los dos primeros
     if not local_obj or not visita_obj:
         local_obj, visita_obj = competidores[0], competidores[1]
-
-    def _extraer_equipo(obj):
-        team = obj.get("team") or {}
-        return {
-            "id": team.get("id"),
-            "nombre": team.get("displayName") or team.get("name") or "?",
-            "abrev": team.get("abbreviation"),
-            "ranking": (obj.get("curatedRank") or {}).get("current"),
-            "record": (obj.get("records") or [{}])[0].get("summary") if obj.get("records") else None,
-        }
 
     local = _extraer_equipo(local_obj)
     visita = _extraer_equipo(visita_obj)
 
-    fecha_str = evento.get("date")  # ISO 8601 UTC
+    fecha_str = evento.get("date")
     try:
         if fecha_str:
             fecha_dt = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
@@ -133,7 +118,7 @@ def _normalizar_evento_espn(evento, deporte_interno, liga_nombre):
         start_ts = 0
 
     estado_obj = (comp.get("status") or evento.get("status") or {})
-    tipo_estado = (estado_obj.get("type") or {}).get("state", "pre")  # pre | in | post
+    tipo_estado = (estado_obj.get("type") or {}).get("state", "pre")
     estado_txt = (estado_obj.get("type") or {}).get("description") or "Programado"
 
     return {
@@ -146,15 +131,11 @@ def _normalizar_evento_espn(evento, deporte_interno, liga_nombre):
         "estado": estado_txt,
         "tipo_estado": tipo_estado,
         "startTimestamp": start_ts,
-        "favorito_hint": None,  # ESPN no da favorito, lo calcula el motor
         "fuente": "espn",
     }
 
 
 def obtener_eventos_espn(deporte_interno):
-    """
-    Devuelve todos los eventos de ESPN para un deporte interno (hoy y mañana).
-    """
     deporte_espn = _deporte_espn_para(deporte_interno)
     if not deporte_espn:
         return []
@@ -173,16 +154,5 @@ def obtener_eventos_espn(deporte_interno):
                 if normalizado:
                     eventos_totales.append(normalizado)
 
-    # Deduplicar por id
     unicos = {ev["id"]: ev for ev in eventos_totales}
     return list(unicos.values())
-
-
-def es_femenino(evento):
-    """
-    Filtro femenino para ESPN. ESPN ya nos da ligas femeninas específicas,
-    pero por si acaso revisamos el nombre del torneo.
-    """
-    texto = f"{evento['torneo']} {evento['local']['nombre']} {evento['visita']['nombre']}".lower()
-    # Las ligas de DEPORTES_ESPN ya son femeninas, así que aquí solo verificamos palabras clave
-    return True
