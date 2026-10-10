@@ -67,7 +67,7 @@ def disponible():
 
 
 def _headers():
-    return {"X-API-Key": API_KEY, "Accept": "application/json"}
+    return {"Accept": "application/json"}
 
 
 def _get(ruta, params=None):
@@ -80,6 +80,8 @@ def _get(ruta, params=None):
                         "se reanuda mañana (UTC)")
         return None
     info = {}
+    params = dict(params or {})
+    params["apiKey"] = API_KEY  # <-- La key va como query parameter
     data = U.get_json(f"{BASE}{ruta}", FUENTE, headers=_headers(), params=params, timeout=30, info=info)
     if info.get("status") is not None:
         presupuesto.registrar(1)
