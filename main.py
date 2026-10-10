@@ -5,6 +5,7 @@ Radar Mismatch Multideporte Femenino 360° — Resiliente
 - Importación segura de módulos para evitar cierres prematuros.
 - Solo partidos vigentes (no empezados / en juego), hora en ARG real, try/except por evento,
   persistencia de partidos ya vistos y resumen por etapa en cada barrido.
+- Proxy opcional para Sofascore (variable SOFASCORE_PROXY) y corte rápido si la IP está bloqueada.
 """
 
 import html
@@ -35,8 +36,11 @@ class SimpleHandler(BaseHTTPRequestHandler):
 
 def iniciar_servidor_web():
     puerto = int(os.environ.get("PORT", 10000))
-    servidor = HTTPServer(("0.0.0.0", puerto), SimpleHandler)
-    servidor.serve_forever()
+    try:
+        servidor = HTTPServer(("0.0.0.0", puerto), SimpleHandler)
+        servidor.serve_forever()
+    except OSError as e:  # puerto ocupado (p. ej. corriendo en casa): el radar sigue igual
+        print(f"Servidor web no iniciado ({e}); el radar continúa sin él", flush=True)
 
 
 Thread(target=iniciar_servidor_web, daemon=True).start()
@@ -171,14 +175,17 @@ KEYWORDS_FEMENINAS = [
     "liga f", "serie a fem", "frauen-bundesliga", "sdhl", "pwhl",
 ]
 
+# Sin User-Agent a propósito: curl_cffi (impersonate chrome124) pone el de Chrome de escritorio
+# y coherente con su huella TLS. Si caés al fallback "requests" se usa el UA por defecto de utilidades.
 HEADERS_SOFASCORE = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
-    "Cache-Control": "max-age=0"
+    "Accept": "*/*",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
 }
 
-PROXIES_SOFASCORE = None
+# Proxy opcional (http://usuario:clave@host:puerto). Se define en las variables de entorno.
+PROXIES_SOFASCORE = U.proxies_desde_env("SOFASCORE_PROXY")
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _cache_tablas = U.CacheTTL(6 * 3600)
@@ -537,6 +544,12 @@ def _barrido_sofascore(resumen):
     analizados_total = 0
 
     for slug, deporte_nombre in DEPORTES_RADAR.items():
+        # Corte rápido: si ya hubo 3+ pedidos y ninguno fue 200, la IP está bloqueada.
+        # Seguir pegándole 25 veces más solo empeora la reputación de la IP.
+        if U.hay_bloqueo("sofascore"):
+            U.log("[sofascore] bloqueado (sin ninguna respuesta 200): corto el barrido de Sofascore")
+            break
+
         st = resumen.setdefault(slug, _nuevo_stat())
         eventos = obtener_partidos_sofascore(slug)
         st["eventos"] = len(eventos)
@@ -574,18 +587,17 @@ def _imprimir_resumen(resumen):
 
 def _avisar_fuentes_caidas():
     for fuente in FUENTES_CON_AVISO:
-        codigos = U.ESTADISTICAS.get(fuente)
-        if not codigos:
-            continue
-        total = sum(codigos.values())
-        if total >= 3 and codigos.get(200, 0) == 0:
+        if U.hay_bloqueo(fuente):
+            codigos = U.ESTADISTICAS.get(fuente, {})
             ultimo = _ultimo_aviso_fuente.get(fuente, 0)
             if time.time() - ultimo > 6 * 3600:
                 _ultimo_aviso_fuente[fuente] = time.time()
+                usa_proxy = "con proxy configurado" if PROXIES_SOFASCORE else "sin proxy"
                 enviar_telegram(
                     f"⚠️ <b>Fuente caída:</b> {html.escape(fuente)} no devolvió ninguna respuesta válida "
-                    f"en este barrido ({html.escape(str(dict(codigos)))}). "
-                    "Si ves 403, la IP del servidor está bloqueada: probá con la variable SOFASCORE_PROXY."
+                    f"en este barrido ({html.escape(str(dict(codigos)))}, {usa_proxy}). "
+                    "Si ves 403, la IP del servidor está bloqueada: corré el radar desde una IP "
+                    "residencial (PC/celu en casa) o definí la variable SOFASCORE_PROXY."
                 )
 
 
@@ -620,6 +632,7 @@ def ejecutar_barrido_radar():
 if __name__ == "__main__":
     U.log("Radar Cuantitativo Multideporte Femenino 360° desplegado...")
     U.log(f"Persistencia: {U.modo_persistencia()}")
+    U.log(f"Proxy Sofascore: {'sí' if PROXIES_SOFASCORE else 'no'}")
 
     aviso = "🤖 <b>Radar Femenino 360° activo.</b>\n" + f"Persistencia: {html.escape(U.modo_persistencia())}"
     if not U.persistencia_es_duradera():

@@ -3,7 +3,7 @@ utilidades.py
 Funciones compartidas por todo el radar:
 - Hora de Argentina (zona horaria real, no la del servidor).
 - Logging y estadísticas por fuente (cuántas respuestas 200 / 403 / errores).
-- HTTP con manejo de errores visible (nada falla en silencio).
+- HTTP con manejo de errores visible (nada falla en silencio), con soporte de proxy.
 - Cache con vencimiento.
 - Persistencia de partidos ya vistos (Upstash Redis o archivo en DATA_DIR).
 - Normalización y comparación de nombres de equipos / jugadoras.
@@ -26,6 +26,14 @@ try:
 except Exception:
     # Sin tzdata: Argentina es UTC-3 todo el año (no tiene horario de verano).
     TZ_ARG = timezone(timedelta(hours=-3))
+
+try:
+    from curl_cffi import requests as curl_requests
+except Exception as _e_import_curl:  # no instalado / no compatible (p. ej. Termux)
+    curl_requests = None
+    _ERROR_IMPORT_CURL = f"{type(_e_import_curl).__name__}: {_e_import_curl}"
+else:
+    _ERROR_IMPORT_CURL = ""
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +64,10 @@ def log(msg):
     print(f"[{ahora_arg().strftime('%d/%m %H:%M:%S')}] {msg}", flush=True)
 
 
+if curl_requests is None:
+    log(f"[http] curl_cffi no disponible ({_ERROR_IMPORT_CURL}); uso requests (sin huella TLS de navegador)")
+
+
 # ---------------------------------------------------------------------------
 # HTTP + ESTADÍSTICAS POR FUENTE
 # ---------------------------------------------------------------------------
@@ -68,8 +80,13 @@ HEADERS_NAVEGADOR = {
     "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
 }
 
+# Con curl_cffi el User-Agent y los sec-ch-* los pone la propia huella de Chrome.
+# Si mandamos otro UA (p. ej. Android) se contradice con el TLS y nos delata.
+_HEADERS_QUE_PONE_CURL = {"user-agent", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}
+
 ESTADISTICAS = defaultdict(lambda: defaultdict(int))
 _lock = threading.Lock()
+_avisos_curl = set()
 
 
 def reiniciar_estadisticas():
@@ -82,34 +99,46 @@ def _registrar(fuente, codigo):
         ESTADISTICAS[fuente][codigo] += 1
 
 
-def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None):
-    r = None
-    # Intento 1: Emulación de navegador TLS real
-    try:
-        from curl_cffi import requests as curl_requests
-        r = curl_requests.get(
-            url,
-            headers=headers or HEADERS_NAVEGADOR,
-            params=params,
-            timeout=timeout,
-            impersonate="chrome124"
-        )
-    except Exception as e_curl:
-        # Intento 2: Fallback estándar
-        try:
-            r = requests.get(
-                url,
-                headers=headers or HEADERS_NAVEGADOR,
-                params=params,
-                timeout=timeout
-            )
-        except requests.RequestException as e:
-            _registrar(fuente, "error_red")
-            log(f"[{fuente}] error_red: {type(e).__name__} en {url.split('?')[0]} (curl error: {e_curl})")
-            return None
+def hay_bloqueo(fuente, minimo=3):
+    """True si la fuente devolvió >= `minimo` respuestas y ninguna fue 200."""
+    codigos = ESTADISTICAS.get(fuente)
+    if not codigos:
+        return False
+    return sum(codigos.values()) >= minimo and codigos.get(200, 0) == 0
 
-    if r is None:
+
+def proxies_desde_env(nombre_var):
+    """Lee una variable de entorno con la URL del proxy (http://user:pass@host:puerto)."""
+    url = (os.environ.get(nombre_var) or "").strip()
+    return {"http": url, "https": url} if url else None
+
+
+def _pedir(url, headers, params, timeout, proxies, fuente):
+    """Intenta con curl_cffi (huella Chrome) y, si no se puede, con requests."""
+    base = headers or HEADERS_NAVEGADOR
+    if curl_requests is not None:
+        try:
+            h = {k: v for k, v in base.items() if k.lower() not in _HEADERS_QUE_PONE_CURL}
+            return curl_requests.get(
+                url, headers=h, params=params, timeout=timeout,
+                impersonate="chrome124", proxies=proxies,
+            )
+        except Exception as e_curl:
+            clave = (fuente, type(e_curl).__name__)
+            if clave not in _avisos_curl:  # una vez por tipo de error, no en cada pedido
+                _avisos_curl.add(clave)
+                log(f"[{fuente}] curl_cffi falló ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
+    try:
+        return requests.get(url, headers=base, params=params, timeout=timeout, proxies=proxies)
+    except requests.RequestException as e:
         _registrar(fuente, "error_red")
+        log(f"[{fuente}] error_red: {type(e).__name__} en {url.split('?')[0]}")
+        return None
+
+
+def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None):
+    r = _pedir(url, headers, params, timeout, proxies, fuente)
+    if r is None:
         return None
 
     if info is not None:
@@ -125,14 +154,9 @@ def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, i
         return r.json()
     except Exception:
         _registrar(fuente, "json_invalido")
-        log(f"[{fuente}] respuesta no es JSON en {url.split('?')[0]}")
-        return None
-
-    try:
-        return r.json()
-    except ValueError:
-        _registrar(fuente, "json_invalido")
-        log(f"[{fuente}] respuesta no es JSON en {url.split('?')[0]}")
+        cuerpo = (r.text or "")[:200].replace("\n", " ")
+        tipo = r.headers.get("content-type", "?")
+        log(f"[{fuente}] respuesta no es JSON en {url.split('?')[0]} (content-type {tipo}) cuerpo: {cuerpo!r}")
         return None
 
 
