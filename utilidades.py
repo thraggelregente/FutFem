@@ -82,36 +82,35 @@ def _registrar(fuente, codigo):
         ESTADISTICAS[fuente][codigo] += 1
 
 
-def get_json(url, fuente, headers=None, params=None, timeout=10, proxies=None, info=None):
-    """
-    GET que devuelve JSON. Si la fuente es Sofascore o da problemas de bloqueo,
-    utiliza emulación TLS (Chrome) para saltar Cloudflare sin necesidad de proxy.
-    """
+def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None):
+    r = None
+    # Intento 1: Emulación de navegador TLS real
     try:
-        # Intento prioritario con emulación de navegador real
         from curl_cffi import requests as curl_requests
         r = curl_requests.get(
             url,
             headers=headers or HEADERS_NAVEGADOR,
             params=params,
             timeout=timeout,
-            impersonate="chrome124",
-            proxies=proxies
+            impersonate="chrome124"
         )
-    except Exception:
-        # Fallback a requests tradicional
+    except Exception as e_curl:
+        # Intento 2: Fallback estándar
         try:
             r = requests.get(
                 url,
                 headers=headers or HEADERS_NAVEGADOR,
                 params=params,
-                timeout=timeout,
-                proxies=proxies
+                timeout=timeout
             )
         except requests.RequestException as e:
             _registrar(fuente, "error_red")
-            log(f"[{fuente}] error de red ({type(e).__name__}) en {url.split('?')[0]}")
+            log(f"[{fuente}] error_red: {type(e).__name__} en {url.split('?')[0]} (curl error: {e_curl})")
             return None
+
+    if r is None:
+        _registrar(fuente, "error_red")
+        return None
 
     if info is not None:
         info["status"] = r.status_code
@@ -120,6 +119,13 @@ def get_json(url, fuente, headers=None, params=None, timeout=10, proxies=None, i
     _registrar(fuente, r.status_code)
     if r.status_code != 200:
         log(f"[{fuente}] HTTP {r.status_code} en {url.split('?')[0]}")
+        return None
+
+    try:
+        return r.json()
+    except Exception:
+        _registrar(fuente, "json_invalido")
+        log(f"[{fuente}] respuesta no es JSON en {url.split('?')[0]}")
         return None
 
     try:
