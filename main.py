@@ -137,11 +137,14 @@ except Exception as e:
 
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
-MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "100"))
+MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "150"))
 HORAS_VENTANA_PREVIA = 24
 
-# Deportes con endpoint válido en ESPN (se quitaron vóley, balonmano y rugby
-# porque ESPN no tiene esos slugs accesibles vía API pública).
+# Deportes a analizar (internos). ESPN mapea cada uno a sus ligas en fuente_espn.py.
+# Soccer ahora incluye 22 ligas femeninas (17 nacionales + 5 internacionales).
+# Basketball incluye WNBA + NCAA Women's.
+# Ice Hockey incluye NCAA Women's.
+# Tennis incluye WTA.
 DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey"]
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
@@ -152,7 +155,8 @@ _cache_historial = U.CacheTTL(3 * 3600)
 # FILTRO FEMENINO (simplificado: las ligas de ESPN ya son femeninas)
 # ---------------------------------------------------------------------------
 _RE_MASCULINO = re.compile(
-    r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile|nba|nfl|nhl|mlb|mls)\b"
+    r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile|"
+    r"nba|nfl|nhl|mlb|mls|liga mx|bundesliga|serie a|premier league|la liga|ligue 1|eredivisie)\b"
 )
 
 
@@ -304,7 +308,7 @@ def _procesar_evento_espn(evento, st):
         registro.marcar(id_unico)
         return True
 
-    # Deportes de equipo: usamos récord + ranking de ESPN
+    # Deportes de equipo: récord + ranking de ESPN
     record_loc = evento["local"].get("record") or ""
     record_vis = evento["visita"].get("record") or ""
     ranking_loc = evento["local"].get("ranking")
@@ -337,7 +341,6 @@ def _procesar_evento_espn(evento, st):
         try:
             rl, rv = int(ranking_loc), int(ranking_vis)
             if rl > 0 and rv > 0:
-                # En rankings, número MENOR es mejor
                 if rl <= 15 and rv >= 50:
                     favorito = motor_mismatches.LOCAL
                     detalle = f"Ranking: {nom_loc} #{rl} vs {nom_vis} #{rv}"
