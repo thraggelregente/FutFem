@@ -1,7 +1,8 @@
 """
 fuente_thesportsdb.py
-Fuente de datos TheSportsDB (API pública V1 con clave '3').
-Optimizada para capturar ligas y eventos femeninos vía strGender y whitelist oficial.
+Fuente TheSportsDB optimizada:
+- Consulta eventos globales del día por deporte (/eventsday.php?d=...&s=Deporte).
+- Aplica el filtro femenino unificado U.es_femenino (detecta Toppserien, Eredivisie Women, etc.).
 """
 
 import os
@@ -12,7 +13,7 @@ import utilidades as U
 API_KEY = os.environ.get("THESPORTSDB_KEY", "3")
 BASE = f"https://www.thesportsdb.com/api/v1/json/{API_KEY}"
 
-_DEPORTE_TSDB = {
+_DEPORTES_TSDB = {
     "Soccer": "Soccer",
     "Basketball": "Basketball",
     "Handball": "Handball",
@@ -21,115 +22,72 @@ _DEPORTE_TSDB = {
     "Rugby": "Rugby",
 }
 
-_KEYWORDS_FEM = [
-    "women", "womens", "women's", "woman", "fem", "femenil", "femenino",
-    "femenina", "feminin", "feminine", "femminile", "dames", "damen",
-    "frauen", "ladies", "wta", "wnba", "nwsl", "wsl", "liga f", "damallsvenskan"
-]
-
-_cache_ligas = U.CacheTTL(12 * 3600)
-_cache_eventos = U.CacheTTL(30 * 60)
+_cache_eventos = U.CacheTTL(30 * 60)  # 30 minutos
 
 
-def _es_liga_femenina(liga):
-    """Detecta si la liga es femenina usando strGender o keywords en el nombre."""
-    if not isinstance(liga, dict):
-        return False
-
-    # 1. Chequeo directo por el campo de género de la API
-    genero = str(liga.get("strGender") or "").strip().lower()
-    if genero in ("female", "women"):
-        return True
-
-    # 2. Chequeo por nombre y nombres alternativos
-    texto = f"{liga.get('strLeague', '')} {liga.get('strLeagueAlternate', '')}".lower()
-    return any(kw in texto for kw in _KEYWORDS_FEM)
-
-
-def _obtener_ligas_femeninas(deporte_tsdb):
-    cache_key = f"ligas_{deporte_tsdb}"
-    hit, valor = _cache_ligas.get(cache_key)
+def _obtener_eventos_deporte_fecha(deporte_tsdb, fecha_str):
+    clave = (deporte_tsdb, fecha_str)
+    hit, valor = _cache_eventos.get(clave)
     if hit:
         return valor
 
-    url = f"{BASE}/all_leagues.php"
-    data = U.get_json(url, "thesportsdb", timeout=15)
-
-    ligas_femeninas = []
-    if isinstance(data, dict):
-        for liga in data.get("leagues", []) or []:
-            sport = liga.get("strSport", "")
-            if sport != deporte_tsdb:
-                continue
-            if _es_liga_femenina(liga):
-                ligas_femeninas.append({
-                    "id": liga.get("idLeague"),
-                    "nombre": liga.get("strLeague", ""),
-                })
-
-    U.log(f"[thesportsdb/{deporte_tsdb}] {len(ligas_femeninas)} ligas femeninas encontradas")
-    _cache_ligas.set(cache_key, ligas_femeninas)
-    return ligas_femeninas
-
-
-def _obtener_eventos_liga(liga_id, fecha_yyyymmdd):
     url = f"{BASE}/eventsday.php"
-    params = {"d": fecha_yyyymmdd, "l": liga_id}
-    data = U.get_json(url, "thesportsdb", params=params, timeout=10)
+    params = {"d": fecha_str, "s": deporte_tsdb}
+    data = U.get_json(url, "thesportsdb", params=params, timeout=12)
+
+    eventos = []
     if isinstance(data, dict):
-        return data.get("events", []) or []
-    return []
+        eventos = data.get("events") or []
+
+    _cache_eventos.set(clave, eventos)
+    return eventos
 
 
-def _normalizar_evento(deporte, liga_nombre, evento):
-    fecha_str = evento.get("strTimestamp") or evento.get("dateEvent")
-    hora_str = evento.get("strTime") or ""
+def _normalizar_evento(deporte_interno, ev):
+    torneo = ev.get("strLeague") or ""
+    nom_loc = ev.get("strHomeTeam") or "Local"
+    nom_vis = ev.get("strAwayTeam") or "Visitante"
 
+    # Filtro compartido: reconoce Toppserien, Frauen, W, Women, etc.
+    if not U.es_femenino(torneo, nom_loc, nom_vis):
+        return None
+
+    fecha_str = ev.get("strTimestamp") or ev.get("dateEvent")
+    hora_str = ev.get("strTime") or ""
     start_ts = 0
+
     if fecha_str:
         try:
             if "T" in fecha_str:
-                fecha_dt = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
             else:
                 dt_completo = f"{fecha_str}T{hora_str or '00:00:00'}"
-                fecha_dt = datetime.fromisoformat(dt_completo).replace(tzinfo=timezone.utc)
-            start_ts = int(fecha_dt.timestamp())
+                dt = datetime.fromisoformat(dt_completo).replace(tzinfo=timezone.utc)
+            start_ts = int(dt.timestamp())
         except Exception:
             pass
 
-    estado_api = (evento.get("strStatus") or "").lower()
-    if estado_api in ("", "not started", "ns"):
+    estado_raw = str(ev.get("strStatus") or "").lower()
+    if estado_raw in ("", "not started", "ns", "scheduled", "time to be defined"):
         tipo_estado = "pre"
-        estado_txt = "Programado"
-    elif "live" in estado_api or "progress" in estado_api:
+    elif "live" in estado_raw or "progress" in estado_raw:
         tipo_estado = "in"
-        estado_txt = "En vivo"
     else:
         tipo_estado = "post"
-        estado_txt = "Finalizado"
-
-    try:
-        score_local = int(evento.get("intHomeScore") or 0)
-        score_visita = int(evento.get("intAwayScore") or 0)
-    except (ValueError, TypeError):
-        score_local = score_visita = None
-
-    nom_loc = evento.get("strHomeTeam", "Local")
-    nom_vis = evento.get("strAwayTeam", "Visitante")
 
     return {
-        "id": f"thesportsdb_{evento.get('idEvent')}",
+        "id": f"thesportsdb_{ev.get('idEvent')}",
         "clave": U.clave_partido(nom_loc, nom_vis, start_ts),
-        "deporte": deporte,
-        "torneo": liga_nombre,
+        "deporte": deporte_interno,
+        "torneo": torneo,
         "local": {
-            "id": evento.get("idHomeTeam"),
+            "id": str(ev.get("idHomeTeam") or nom_loc),
             "nombre": nom_loc,
             "ranking": None,
             "fuera_ranking": False,
         },
         "visita": {
-            "id": evento.get("idAwayTeam"),
+            "id": str(ev.get("idAwayTeam") or nom_vis),
             "nombre": nom_vis,
             "ranking": None,
             "fuera_ranking": False,
@@ -139,34 +97,27 @@ def _normalizar_evento(deporte, liga_nombre, evento):
         "startTimestamp": start_ts,
         "fuente": "thesportsdb",
         "femenino_seguro": True,
-        "score_local": score_local,
-        "score_visita": score_visita,
     }
 
 
 def obtener_eventos(deporte_interno):
-    deporte_tsdb = _DEPORTE_TSDB.get(deporte_interno)
+    deporte_tsdb = _DEPORTES_TSDB.get(deporte_interno)
     if not deporte_tsdb:
-        return []
-
-    ligas = _obtener_ligas_femeninas(deporte_tsdb)
-    if not ligas:
         return []
 
     hoy = datetime.now(timezone.utc)
     fechas = [hoy.strftime("%Y-%m-%d"), (hoy + timedelta(days=1)).strftime("%Y-%m-%d")]
 
-    eventos_totales = []
-    for liga in ligas[:10]:
-        liga_id = liga["id"]
-        liga_nombre = liga["nombre"]
+    eventos_encontrados = []
+    for f in fechas:
+        partidos = _obtener_eventos_deporte_fecha(deporte_tsdb, f)
+        for ev in partidos:
+            norm = _normalizar_evento(deporte_interno, ev)
+            if norm and norm["tipo_estado"] == "pre":
+                eventos_encontrados.append(norm)
 
-        for fecha in fechas:
-            eventos = _obtener_eventos_liga(liga_id, fecha)
-            for ev in eventos:
-                normalizado = _normalizar_evento(deporte_interno, liga_nombre, ev)
-                if normalizado and normalizado["tipo_estado"] == "pre":
-                    eventos_totales.append(normalizado)
+    if eventos_encontrados:
+        U.log(f"[thesportsdb/{deporte_interno}] {len(eventos_encontrados)} partidos femeninos capturados")
 
-    unicos = {ev["id"]: ev for ev in eventos_totales}
+    unicos = {e["id"]: e for e in eventos_encontrados}
     return list(unicos.values())
