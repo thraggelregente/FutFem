@@ -1,19 +1,7 @@
 """
 fuente_espn.py
 ESPN (API pública, sin clave y sin cuota diaria): fuente principal del radar.
-
-Qué aporta:
-- Partidos de las próximas horas de ligas FEMENINAS verificadas (fútbol, WNBA, NCAA, WTA).
-- Historial reciente de resultados por equipo, armado con los marcadores pasados de cada liga.
-  (Es lo que alimenta forma, triangulación, momentum, descanso y H2H del motor.)
-- Ranking WTA para el tenis.
-
-Importante: los slugs de ESPN para fútbol femenino llevan ".w." (eng.w.1, esp.w.1...) o son
-nombres propios (usa.nwsl, uefa.wchampions). Slugs como "esp.1", "eng.1" o "mex.1" son las
-ligas MASCULINAS. Antes la lista tenía 18 slugs masculinos rotulados como femeninos.
-
-Para agregar ligas sin tocar el código:  ESPN_SLUGS_EXTRA="soccer:ger.w.1,soccer:ita.w.1"
-(solo se aceptan slugs que parezcan femeninos; no pude verificar ger.w.1, ita.w.1, bra.w.1, mex.w.1).
+Cobertura multideporte femenino expandida (Fútbol, WNBA, NCAA, WTA).
 """
 
 import os
@@ -28,16 +16,21 @@ FUENTE = "espn"
 HORAS_VENTANA = 24
 DIAS_HISTORIAL = int(os.environ.get("ESPN_HIST_DIAS", "45"))
 
-# Verificadas contra la API en vivo (nombre de liga devuelto por ESPN entre paréntesis).
+# Ligas femeninas verificadas en la API de ESPN
 LIGAS = {
     "Soccer": {
-        "eng.w.1": "Women's Super League (Inglaterra)",   # English Women's Super League
-        "usa.nwsl": "NWSL (EE.UU.)",                       # NWSL
-        "esp.w.1": "Liga F (España)",                      # Spanish Liga F
-        "fra.w.1": "Première Ligue (Francia)",             # French Première Ligue
-        "ned.w.1": "Vrouwen Eredivisie (Países Bajos)",    # Dutch Vrouwen Eredivisie
-        "aus.w.1": "A-League Women (Australia)",           # Australian A-League Women
+        "eng.w.1": "Women's Super League (Inglaterra)",
+        "usa.nwsl": "NWSL (EE.UU.)",
+        "esp.w.1": "Liga F (España)",
+        "fra.w.1": "Première Ligue (Francia)",
+        "ned.w.1": "Vrouwen Eredivisie (Países Bajos)",
+        "aus.w.1": "A-League Women (Australia)",
+        "ger.w.1": "Frauen-Bundesliga (Alemania)",
+        "ita.w.1": "Serie A Femminile (Italia)",
+        "mex.w.1": "Liga MX Femenil (México)",
+        "bra.w.1": "Brasileirão Feminino (Brasil)",
         "uefa.wchampions": "UEFA Women's Champions League",
+        "fifa.wwc": "Copa Mundial Femenina",
     },
     "Basketball": {
         "wnba": "WNBA",
@@ -54,9 +47,7 @@ LIGAS = {
 _DEPORTE_ESPN = {"Soccer": "soccer", "Basketball": "basketball", "Ice Hockey": "hockey", "Tennis": "tennis"}
 _SPORT_A_INTERNO = {v: k for k, v in _DEPORTE_ESPN.items()}
 
-# Un slug solo se acepta si parece femenino (evita volver a mezclar ligas masculinas).
 _RE_SLUG_FEM = re.compile(r"(\.w\.|nwsl|wchampions|\.wwc|shebelieves|womens|wnba|wta)", re.I)
-
 _ESTADOS_NO_JUGADOS = ("POSTPONED", "CANCELED", "CANCELLED", "SUSPENDED", "ABANDONED", "DELAYED", "FORFEIT")
 
 _cache_proximos = U.CacheTTL(20 * 60)
@@ -82,11 +73,7 @@ def _ligas_configuradas():
     return ligas
 
 
-# ---------------------------------------------------------------------------
-# HTTP
-# ---------------------------------------------------------------------------
 def _scoreboard(sport, slug, fechas, cache, limit=None):
-    """`fechas`: 'YYYYMMDD' o rango 'YYYYMMDD-YYYYMMDD'. Devuelve el JSON o None."""
     clave = (sport, slug, fechas, limit)
     hit, valor = cache.get(clave)
     if hit:
@@ -118,9 +105,6 @@ def _entero(valor):
         return None
 
 
-# ---------------------------------------------------------------------------
-# PRÓXIMOS PARTIDOS
-# ---------------------------------------------------------------------------
 def _equipo(c):
     team = c.get("team") or {}
     return {
@@ -168,9 +152,7 @@ def _normalizar_equipos(evento, deporte, slug, nombre_liga, ahora):
     }
 
 
-# --- Tenis ------------------------------------------------------------------
 def ranking_wta():
-    """{id_jugadora: ranking}. Vacío si ESPN no responde (en ese caso no se infiere 'fuera del ranking')."""
     hit, valor = _cache_ranking.get("wta")
     if hit:
         return valor
@@ -193,7 +175,7 @@ def _jugadora(c, ranking):
     pid = c.get("id") or ath.get("guid")
     nombre = ath.get("displayName") or ath.get("fullName")
     if not nombre or pid is None:
-        return None  # llave aún sin definir (TBD)
+        return None
     pid = str(pid)
     rk = _entero((c.get("curatedRank") or {}).get("current")) or ranking.get(pid)
     return {"id": pid, "nombre": nombre, "ranking": rk, "fuera_ranking": bool(ranking) and rk is None}
@@ -240,7 +222,6 @@ def _eventos_tenis(slug, nombre_liga, ahora):
 
 
 def obtener_eventos(deporte_interno):
-    """Partidos femeninos de las próximas 24 h para un deporte (sin duplicados)."""
     sport = _DEPORTE_ESPN.get(deporte_interno)
     ligas = _ligas_configuradas().get(deporte_interno, {})
     if not sport or not ligas:
@@ -266,9 +247,6 @@ def obtener_eventos(deporte_interno):
     return list(por_id.values())
 
 
-# ---------------------------------------------------------------------------
-# HISTORIAL (resultados terminados de la liga -> forma por equipo)
-# ---------------------------------------------------------------------------
 def _partido_terminado(evento):
     comps = evento.get("competitions") or []
     if not comps:
@@ -299,8 +277,6 @@ def _partido_terminado(evento):
 
 
 def _eventos_pasados(sport, slug):
-    """Eventos de los últimos DIAS_HISTORIAL días: intenta un solo pedido por rango y, si ESPN
-    no lo acepta, cae a un pedido por día (los días pasados no cambian: cache de 24 h)."""
     desde, hasta = _fecha_utc(-DIAS_HISTORIAL), _fecha_utc(0)
     rango = f"{desde}-{hasta}"
     for limite in (1000, None):
@@ -318,7 +294,6 @@ def _eventos_pasados(sport, slug):
 
 
 def _historial_liga(sport, slug):
-    """{id_equipo: [partidos terminados, del más reciente al más viejo]}."""
     clave = (sport, slug)
     hit, valor = _cache_historial.get(clave)
     if hit:
@@ -344,7 +319,6 @@ def _historial_liga(sport, slug):
 
 
 def historial_equipo(evento, lado):
-    """Últimos partidos terminados del equipo ('local' o 'visita') en esa liga."""
     sport, slug = evento.get("liga_ref") or (None, None)
     if not sport or sport == "tennis":
         return []
