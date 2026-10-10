@@ -1,3 +1,4 @@
 requests
 tzdata
 playwright
+curl_cffi
