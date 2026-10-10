@@ -145,7 +145,7 @@ except Exception as e:
     U.log(f"Aviso: monitor_noticias no disponible: {e}")
 
 
-INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
+INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "600"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "80"))
 HORAS_VENTANA_PREVIA = 24
@@ -218,10 +218,12 @@ def es_deporte_femenino_valido(torneo, local, visita):
 # ---------------------------------------------------------------------------
 # SOFASCORE
 # ---------------------------------------------------------------------------
+# En main.py, reemplaza la función _sofa_get:
+
 def _sofa_get(url):
     time.sleep(0.4)
-    return U.get_json(url, "sofascore", headers=HEADERS_SOFASCORE, timeout=12, proxies=PROXIES_SOFASCORE)
-
+    # Usamos Playwright para evitar bloqueos de Cloudflare
+    return U.get_json_sofascore(url)
 
 def obtener_partidos_sofascore(slug):
     """Eventos de hoy y mañana (hora ARG), sin duplicados."""

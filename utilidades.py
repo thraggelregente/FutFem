@@ -361,3 +361,51 @@ def nombres_coinciden(a, b):
     if not ta or not tb:
         return False
     return ta <= tb or tb <= ta
+# ---------------------------------------------------------------------------
+# PLAYWRIGHT PARA SOFASCORE (Evita bloqueos de Cloudflare)
+# ---------------------------------------------------------------------------
+# En utilidades.py, al final del archivo:
+
+import asyncio
+from playwright.async_api import async_playwright
+
+async def _obtener_json_sofascore_async(url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            locale="es-AR",
+            timezone_id="America/Argentina/Buenos_Aires",
+        )
+        page = await context.new_page()
+        try:
+            await page.goto("https://www.sofascore.com/", wait_until="domcontentloaded", timeout=15000)
+            respuesta = await page.evaluate(f"""
+                async () => {{
+                    const res = await fetch("{url}", {{
+                        headers: {{
+                            "Accept": "application/json",
+                            "Referer": "https://www.sofascore.com/"
+                        }}
+                    }});
+                    return await res.json();
+                }}
+            """)
+            await browser.close()
+            return respuesta
+        except Exception as e:
+            log(f"[playwright] Error obteniendo {url}: {type(e).__name__}: {e}")
+            await browser.close()
+            return None
+
+def get_json_sofascore(url):
+    """Wrapper síncrono compatible con Windows."""
+    try:
+        # En Windows, a veces hay un event loop ya corriendo (ej. en Jupyter)
+        # Forzamos uno nuevo para evitar conflictos
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_obtener_json_sofascore_async(url))
+    except Exception as e:
+        log(f"[playwright] Error en wrapper: {type(e).__name__}: {e}")
+        return None
