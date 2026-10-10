@@ -2,14 +2,13 @@
 main.py
 Radar Mismatch Multideporte Femenino 360° — Resiliente y Multi-Fuente
 
-Fuentes integradas:
+Fuentes activas:
   1. ESPN (principal, sin límite de cuota).
   2. TheSportsDB (gratuita, sin límite).
-  3. ITF World Tennis Tour (cuadros oficiales W15 a W100).
-  4. API-Sports y OddsPapi (secundarias, cuota protegida).
-  5. Highlightly (apoyo de forma, H2H y tablas).
+  3. API-Sports y OddsPapi (secundarias, cuota protegida).
+  4. Highlightly (apoyo de forma, H2H y tablas).
 
-Enfoque: Exclusivamente deportes femeninos y detección matemática de mismatches.
+Enfoque: Exclusivamente deportes femeninos y detección cuantitativa de mismatches.
 """
 
 import html
@@ -117,7 +116,6 @@ fuente_thesportsdb = _importar("fuente_thesportsdb")
 fuente_api_football = _importar("fuente_api_football")
 fuente_highlightly = _importar("fuente_highlightly")
 fuente_oddspapi = _importar("fuente_oddspapi")
-fuentes_alternativas = _importar("fuentes_alternativas")
 
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "3600"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
@@ -263,31 +261,6 @@ def _procesar_evento(ev, st, ahora_ts):
 # ---------------------------------------------------------------------------
 # RECOLECCIÓN Y BARRIDO
 # ---------------------------------------------------------------------------
-def _barrido_itf(resumen):
-    if not fuentes_alternativas:
-        return
-    st = resumen.setdefault("itf:Tennis", _nuevo_stat())
-    partidos = fuentes_alternativas.obtener_mismatches_itf()
-    st["eventos"] = len(partidos)
-    for m in partidos:
-        mid = m["id"]
-        if registro.visto(mid):
-            st["ya_vistos"] += 1
-            continue
-        st["analizados"] += 1
-        fav = m["favorito"]
-        nom_fav = m["local"] if fav == motor_mismatches.LOCAL else m["visita"]
-        enviar_alerta(
-            deporte="Tennis", torneo=m["torneo"], nom_loc=m["local"], nom_vis=m["visita"],
-            hora_txt=m["horario"], estado="🟢 <b>PRE</b>", alertas_base=[m["detalle"]],
-            pick_base=motor_mismatches.sugerir_mercado("Tennis", fav, nom_fav),
-            favorito=fav, confianza="Media",
-        )
-        registro.marcar(mid)
-        registro.guardar()
-        st["alertas"] += 1
-
-
 def _recolectar_eventos(resumen):
     por_clave = {}
     fuentes = [
@@ -362,13 +335,6 @@ def ejecutar_barrido_radar():
     ahora_ts = time.time()
     analizados = 0
 
-    # 1. Barrido de Tenis ITF Oficial
-    try:
-        _barrido_itf(resumen)
-    except Exception as e:
-        U.log(f"Error en etapa ITF: {type(e).__name__}: {e}")
-
-    # 2. Recolección multi-fuente de deportes de equipo
     eventos = _recolectar_eventos(resumen)
     eventos.sort(key=lambda e: e.get("startTimestamp", 0))
 
@@ -400,8 +366,6 @@ if __name__ == "__main__":
         fuentes.append("ESPN")
     if fuente_thesportsdb:
         fuentes.append("TheSportsDB")
-    if fuentes_alternativas:
-        fuentes.append("ITF Tennis")
     if fuente_api_football and fuente_api_football.disponible():
         fuentes.append("API-Sports")
     if fuente_highlightly and fuente_highlightly.disponible():

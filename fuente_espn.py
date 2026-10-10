@@ -1,7 +1,7 @@
 """
 fuente_espn.py
 ESPN (API pública, sin clave y sin cuota diaria): fuente principal del radar.
-Cobertura multideporte femenino expandida (Fútbol, WNBA, NCAA, WTA).
+Ligas femeninas verificadas en producción.
 """
 
 import os
@@ -16,7 +16,7 @@ FUENTE = "espn"
 HORAS_VENTANA = 24
 DIAS_HISTORIAL = int(os.environ.get("ESPN_HIST_DIAS", "45"))
 
-# Ligas femeninas verificadas en la API de ESPN
+# Ligas verificadas contra la API en vivo
 LIGAS = {
     "Soccer": {
         "eng.w.1": "Women's Super League (Inglaterra)",
@@ -25,12 +25,7 @@ LIGAS = {
         "fra.w.1": "Première Ligue (Francia)",
         "ned.w.1": "Vrouwen Eredivisie (Países Bajos)",
         "aus.w.1": "A-League Women (Australia)",
-        "ger.w.1": "Frauen-Bundesliga (Alemania)",
-        "ita.w.1": "Serie A Femminile (Italia)",
-        "mex.w.1": "Liga MX Femenil (México)",
-        "bra.w.1": "Brasileirão Feminino (Brasil)",
         "uefa.wchampions": "UEFA Women's Champions League",
-        "fifa.wwc": "Copa Mundial Femenina",
     },
     "Basketball": {
         "wnba": "WNBA",
