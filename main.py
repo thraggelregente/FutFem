@@ -1,11 +1,11 @@
 """
 main.py
-Radar Mismatch Multideporte Femenino 360° — Versión ESPN
+Radar Mismatch Multideporte Femenino 360° — Multi-fuente
 - Servidor web fantasma prioritario (garantiza estado LIVE en Render).
 - Importación segura de módulos para evitar cierres prematuros.
 - Solo partidos vigentes (no empezados / en juego), hora en ARG real, try/except por evento,
   persistencia de partidos ya vistos y resumen por etapa en cada barrido.
-- Fuente principal: ESPN API (pública, sin Cloudflare, sin autenticación).
+- Fuentes: ESPN API, API-Football, TheSportsDB, FlashScore (scraping).
 """
 
 import html
@@ -24,7 +24,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Radar Mismatches Femenino 360 OK (ESPN)")
+        self.wfile.write(b"Radar Mismatches Femenino 360 OK")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -117,6 +117,24 @@ except Exception as e:
     U.log(f"ERROR cargando fuente_espn: {e}")
 
 try:
+    import fuente_api_football
+except Exception as e:
+    fuente_api_football = None
+    U.log(f"ERROR cargando fuente_api_football: {e}")
+
+try:
+    import fuente_thesportsdb
+except Exception as e:
+    fuente_thesportsdb = None
+    U.log(f"ERROR cargando fuente_thesportsdb: {e}")
+
+try:
+    import fuente_flashscore
+except Exception as e:
+    fuente_flashscore = None
+    U.log(f"ERROR cargando fuente_flashscore: {e}")
+
+try:
     import tracker_cuotas_smart
 except Exception as e:
     tracker_cuotas_smart = None
@@ -137,36 +155,80 @@ except Exception as e:
 
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
-MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "150"))
+MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "200"))
 HORAS_VENTANA_PREVIA = 24
 
-# Deportes a analizar (internos). ESPN mapea cada uno a sus ligas en fuente_espn.py.
-# Soccer ahora incluye 22 ligas femeninas (17 nacionales + 5 internacionales).
-# Basketball incluye WNBA + NCAA Women's.
-# Ice Hockey incluye NCAA Women's.
-# Tennis incluye WTA.
-DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey"]
+# Deportes a analizar (internos)
+DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Volleyball", "Handball"]
+
+# Fuentes activas: cada una es un módulo con `obtener_eventos(deporte)` y `es_femenino(evento)`
+FUENTES_ACTIVAS = {
+    "espn": fuente_espn,
+    "api_football": fuente_api_football,
+    "thesportsdb": fuente_thesportsdb,
+    "flashscore": fuente_flashscore,
+}
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _cache_historial = U.CacheTTL(3 * 3600)
 
 
 # ---------------------------------------------------------------------------
-# FILTRO FEMENINO (simplificado: las ligas de ESPN ya son femeninas)
+# FILTRO FEMENINO ESTRICTO
 # ---------------------------------------------------------------------------
 _RE_MASCULINO = re.compile(
-    r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile|"
-    r"nba|nfl|nhl|mlb|mls|liga mx|bundesliga|serie a|premier league|la liga|ligue 1|eredivisie)\b"
+    r"\b("
+    r"atp|challenger|davis cup|"
+    r"men|mens|men's|masculino|masculin|herren|hommes|maschile|"
+    r"nba|nfl|nhl|mlb|mls|"
+    r"j1 league|j2 league|j3 league|"
+    r"bundesliga|serie a|premier league|la liga|ligue 1|eredivisie|"
+    r"liga mx|superliga|allsvenskan|eliteserien|superligaen"
+    r")\b"
+)
+
+_KEYWORDS_FEM = re.compile(
+    r"\b("
+    r"women|womens|women's|woman|"
+    r"fem|femenil|femenino|femenina|"
+    r"feminin|feminine|femminile|"
+    r"dames|damen|frauen|"
+    r"ladies|"
+    r"wta|wnba|nwsl|wsl|"
+    r"kvinde|kvindeligaen|"
+    r"damallsvenskan|toppserien|"
+    r"we league|"
+    r"liga f|"
+    r"serie a fem|"
+    r"division 1 fem|"
+    r"frauen-bundesliga|"
+    r"eredivisie vrouwen|"
+    r"campeonato nacional feminino|"
+    r"primera division femenina|"
+    r"primera división femenina|"
+    r"brasileirao feminino|"
+    r"brasileirão feminino|"
+    r"a-league women|"
+    r"liga mx femenil|"
+    r"ncaa women|"
+    r"shebelieves|"
+    r"concacaf w|"
+    r"uefa women|"
+    r"fifa women|"
+    r"w gold cup|"
+    r"w champions"
+    r")\b"
 )
 
 
 def es_deporte_femenino_valido(torneo, local, visita):
     """
-    Como las ligas de DEPORTES_ESPN ya son femeninas por definición,
-    solo bloqueamos si hay evidencia clara de masculino en el texto.
+    Filtro femenino estricto: acepta solo si el torneo contiene palabras clave femeninas.
     """
     texto = f"{torneo} {local} {visita}".lower()
     if _RE_MASCULINO.search(texto):
+        return False
+    if not _KEYWORDS_FEM.search(texto):
         return False
     return True
 
@@ -238,7 +300,7 @@ def enriquecer_y_enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, esta
 
 
 # ---------------------------------------------------------------------------
-# BARRIDO ESPN
+# BARRIDO MULTI-FUENTE
 # ---------------------------------------------------------------------------
 def _nuevo_stat():
     return {"eventos": 0, "femeninos": 0, "ya_vistos": 0, "no_vigentes": 0, "lejanos": 0,
@@ -246,7 +308,6 @@ def _nuevo_stat():
 
 
 def _parsear_record(rec):
-    """Convierte '12-3' o '12-3-1' en (victorias, derrotas). None si no se puede."""
     if not rec:
         return None, None
     try:
@@ -258,8 +319,8 @@ def _parsear_record(rec):
         return None, None
 
 
-def _procesar_evento_espn(evento, st):
-    """Procesa un evento de ESPN ya normalizado por fuente_espn.py."""
+def _procesar_evento(evento, st):
+    """Procesa un evento normalizado (venga de la fuente que venga)."""
     id_unico = evento["id"]
 
     if registro.visto(id_unico):
@@ -289,7 +350,7 @@ def _procesar_evento_espn(evento, st):
     estado = "🔴 <b>EN VIVO (LIVE)</b>" if tipo_estado == "in" else "🟢 <b>PRE</b>"
     st["analizados"] += 1
 
-    # Deporte individual: Tenis
+    # Tenis
     if deporte == "Tennis":
         ranking_loc = evento["local"].get("ranking")
         ranking_vis = evento["visita"].get("ranking")
@@ -308,7 +369,7 @@ def _procesar_evento_espn(evento, st):
         registro.marcar(id_unico)
         return True
 
-    # Deportes de equipo: récord + ranking de ESPN
+    # Deportes de equipo
     record_loc = evento["local"].get("record") or ""
     record_vis = evento["visita"].get("record") or ""
     ranking_loc = evento["local"].get("ranking")
@@ -320,7 +381,6 @@ def _procesar_evento_espn(evento, st):
     favorito = None
     detalle = ""
 
-    # Estrategia 1: récord claro (necesita al menos 3 partidos jugados)
     if wl is not None and wv is not None:
         total_l = wl + ll
         total_v = wv + lv
@@ -329,14 +389,13 @@ def _procesar_evento_espn(evento, st):
             tasa_v = wv / total_v
             if tasa_l >= 0.60 and tasa_v <= 0.35 and (wl - wv) >= 3:
                 favorito = motor_mismatches.LOCAL
-                detalle = (f"Récord: {nom_loc} {record_loc} ({round(tasa_l*100)}% victorias) "
+                detalle = (f"Récord: {nom_loc} {record_loc} ({round(tasa_l*100)}%) "
                            f"vs {nom_vis} {record_vis} ({round(tasa_v*100)}%)")
             elif tasa_v >= 0.60 and tasa_l <= 0.35 and (wv - wl) >= 3:
                 favorito = motor_mismatches.VISITA
-                detalle = (f"Récord: {nom_vis} {record_vis} ({round(tasa_v*100)}% victorias) "
+                detalle = (f"Récord: {nom_vis} {record_vis} ({round(tasa_v*100)}%) "
                            f"vs {nom_loc} {record_loc} ({round(tasa_l*100)}%)")
 
-    # Estrategia 2: ranking (útil para NCAA y algunos torneos)
     if favorito is None and ranking_loc and ranking_vis:
         try:
             rl, rv = int(ranking_loc), int(ranking_vis)
@@ -364,39 +423,35 @@ def _procesar_evento_espn(evento, st):
     return True
 
 
-def _barrido_espn(resumen):
-    if fuente_espn is None:
-        U.log("[espn] fuente_espn no disponible")
+def _barrido_fuente(nombre_fuente, modulo, resumen):
+    """Ejecuta el barrido para una fuente concreta."""
+    if modulo is None:
+        U.log(f"[{nombre_fuente}] módulo no disponible, se omite")
         return
 
-    analizados_total = 0
-
     for deporte in DEPORTES_RADAR:
-        st = resumen.setdefault(f"espn_{deporte}", _nuevo_stat())
+        clave_stat = f"{nombre_fuente}_{deporte}"
+        st = resumen.setdefault(clave_stat, _nuevo_stat())
+
         try:
-            eventos = fuente_espn.obtener_eventos_espn(deporte)
+            eventos = modulo.obtener_eventos(deporte)
         except Exception as e:
-            U.log(f"[espn] Error obteniendo {deporte}: {type(e).__name__}: {e}")
+            U.log(f"[{nombre_fuente}] Error obteniendo {deporte}: {type(e).__name__}: {e}")
             continue
 
         st["eventos"] = len(eventos)
+        U.log(f"[{nombre_fuente}] {deporte}: {len(eventos)} eventos")
 
         for ev in eventos:
-            if analizados_total >= MAX_ANALISIS_POR_CICLO:
-                break
             try:
-                if _procesar_evento_espn(ev, st):
-                    analizados_total += 1
+                if _procesar_evento(ev, st):
+                    pass
             except Exception as e:
                 st["errores"] += 1
-                U.log(f"Error en evento {ev.get('id')} ({deporte}): {type(e).__name__}: {e}")
-                U.log(traceback.format_exc().strip().splitlines()[-3])
+                U.log(f"Error en evento {ev.get('id')} ({nombre_fuente}/{deporte}): {type(e).__name__}: {e}")
                 registro.marcar(ev.get("id"))
 
             registro.guardar()
-
-    if analizados_total >= MAX_ANALISIS_POR_CICLO:
-        U.log(f"Tope de {MAX_ANALISIS_POR_CICLO} análisis por ciclo alcanzado")
 
 
 def _imprimir_resumen(resumen):
@@ -405,7 +460,7 @@ def _imprimir_resumen(resumen):
         U.log(
             f"{etapa}: {st['eventos']} eventos -> {st['femeninos']} femeninos -> "
             f"{st['analizados']} analizados -> {st['alertas']} alertas "
-            f"(ya vistos {st['ya_vistos']}, terminados/no vigentes {st['no_vigentes']}, "
+            f"(ya vistos {st['ya_vistos']}, no vigentes {st['no_vigentes']}, "
             f"lejanos {st['lejanos']}, errores {st['errores']})"
         )
     for fuente, codigos in U.ESTADISTICAS.items():
@@ -414,7 +469,7 @@ def _imprimir_resumen(resumen):
 
 def ejecutar_barrido_radar():
     U.reiniciar_estadisticas()
-    U.log("Ejecutando barrido Radar Femenino 360° (ESPN)...")
+    U.log("Ejecutando barrido Radar Femenino 360° (multi-fuente)...")
     if motor_mismatches is None:
         U.log("motor_mismatches no está disponible: se omite el barrido")
         return
@@ -422,21 +477,24 @@ def ejecutar_barrido_radar():
     registro.podar()
     resumen = {}
 
-    try:
-        _barrido_espn(resumen)
-    except Exception as e:
-        U.log(f"Error en barrido ESPN: {type(e).__name__}: {e}")
+    for nombre, modulo in FUENTES_ACTIVAS.items():
+        try:
+            _barrido_fuente(nombre, modulo, resumen)
+        except Exception as e:
+            U.log(f"Error en fuente {nombre}: {type(e).__name__}: {e}")
 
     registro.guardar()
     _imprimir_resumen(resumen)
 
 
 if __name__ == "__main__":
-    U.log("Radar Cuantitativo Multideporte Femenino 360° (ESPN) desplegado...")
+    U.log("Radar Cuantitativo Multideporte Femenino 360° (multi-fuente) desplegado...")
     U.log(f"Persistencia: {U.modo_persistencia()}")
+    U.log(f"Fuentes activas: {list(FUENTES_ACTIVAS.keys())}")
 
-    aviso = ("🤖 <b>Radar Femenino 360° (ESPN) activo.</b>\n"
-             f"Persistencia: {html.escape(U.modo_persistencia())}")
+    aviso = ("🤖 <b>Radar Femenino 360° (multi-fuente) activo.</b>\n"
+             f"Persistencia: {html.escape(U.modo_persistencia())}\n"
+             f"Fuentes: {', '.join(FUENTES_ACTIVAS.keys())}")
     if not U.persistencia_es_duradera():
         aviso += ("\n⚠️ Sin disco persistente: tras un deploy puede repetir alertas de partidos ya "
                   "avisados. Configurá UPSTASH_REDIS_REST_URL/TOKEN o DATA_DIR.")
