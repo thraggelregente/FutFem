@@ -399,13 +399,11 @@ async def _obtener_json_sofascore_async(url):
             return None
 
 def get_json_sofascore(url):
-    """Wrapper síncrono compatible con Windows."""
+    """Wrapper síncrono para usar Playwright desde código síncrono."""
     try:
-        # En Windows, a veces hay un event loop ya corriendo (ej. en Jupyter)
-        # Forzamos uno nuevo para evitar conflictos
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(_obtener_json_sofascore_async(url))
     except Exception as e:
         log(f"[playwright] Error en wrapper: {type(e).__name__}: {e}")
-        return None
+        return None 
