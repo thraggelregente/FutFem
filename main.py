@@ -178,8 +178,8 @@ HEADERS_SOFASCORE = dict(
 )
 
 # Si Sofascore bloquea la IP de Render (403) se puede definir un proxy: SOFASCORE_PROXY=http://user:pass@host:puerto
-_PROXY = os.environ.get("SOFASCORE_PROXY")
-PROXIES_SOFASCORE = {"http": _PROXY, "https": _PROXY} if _PROXY else None
+```python
+PROXIES_SOFASCORE = None
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _cache_tablas = U.CacheTTL(6 * 3600)
