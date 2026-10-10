@@ -18,13 +18,26 @@ services:
         sync: false
       - key: CHAT_ID_GRUPO
         sync: false
-      # Persistencia (gratis en upstash.com): evita alertas repetidas tras cada deploy
+      # Persistencia
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      # Opcionales
+      # Fuentes
       - key: API_FOOTBALL_KEY
         sync: false
       - key: ODDS_API_KEY
         sync: false
+      - key: HIGHLIGHTLY_API_KEY
+        sync: false
+      - key: ODDSPAPI_API_KEY
+        sync: false
+      # Límites (ajustables sin tocar código)
+      - key: API_SPORTS_DEPORTES
+        value: "Soccer"      # Solo Soccer por ahora (ahorra cuota)
+      - key: API_SPORTS_MAX_LIGAS
+        value: "2"           # Máximo 2 ligas por deporte
+      - key: MAX_ANALISIS_POR_CICLO
+        value: "100"
+      - key: ACTIVAR_MONITOR_NOTICIAS
+        value: "0"           # Nitter está muerto; activar con 1 si algún día funciona

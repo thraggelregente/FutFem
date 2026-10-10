@@ -2,13 +2,11 @@
 main.py
 Radar Mismatch Multideporte Femenino 360°
 
-Flujo de cada barrido:
-  1. Junta los partidos femeninos de las próximas 24 h:
-       ESPN (principal, sin clave ni cuota)  +  API-Sports (secundaria, con presupuesto diario).
-  2. Descarta duplicados entre fuentes y partidos ya avisados.
-  3. Tenis: ranking (WTA). Deportes de equipo: historial de resultados -> motor de señales.
-  4. Si hay mismatch, enriquece con noticias/cuotas y avisa por Telegram.
-  5. Imprime un resumen por etapa y avisa por Telegram si una fuente quedó ciega.
+Flujo:
+  1. ESPN (principal) + API-Sports (opcional) dan eventos femeninos de las próximas 24h.
+  2. Para cada evento, se obtiene el historial del equipo y H2H probando varias fuentes:
+     ESPN -> API-Sports -> Highlightly -> OddsPapi.
+  3. El motor de señales evalúa y, si hay mismatch, avisa por Telegram.
 """
 
 import html
@@ -21,7 +19,7 @@ from threading import Thread
 import requests
 
 
-# --- 1. SERVIDOR WEB FANTASMA (arranca primero: Render exige un puerto abierto) ---
+# --- 1. SERVIDOR WEB FANTASMA ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -58,8 +56,6 @@ def _sin_html(texto):
 
 
 def enviar_telegram(mensaje_html):
-    """HTML con los campos escapados; si Telegram rechaza el formato (400) reintenta en texto plano.
-    Loguea cada fallo (antes un token o chat_id mal cargado fallaba sin dejar rastro)."""
     if not TELEGRAM_TOKEN:
         U.log("Telegram: falta TELEGRAM_TOKEN, no se envía")
         return False
@@ -110,14 +106,22 @@ def _importar(nombre, critico=False):
 motor_mismatches = _importar("motor_mismatches", critico=True)
 fuente_espn = _importar("fuente_espn")
 fuente_api_football = _importar("fuente_api_football")
+fuente_highlightly = _importar("fuente_highlightly")
+fuente_oddspapi = _importar("fuente_oddspapi")
 tracker_cuotas_smart = _importar("tracker_cuotas_smart")
-monitor_noticias = _importar("monitor_noticias")
+
+# Monitor de noticias: desactivado por defecto (Nitter está muerto)
+if os.environ.get("ACTIVAR_MONITOR_NOTICIAS") == "1":
+    monitor_noticias = _importar("monitor_noticias")
+else:
+    monitor_noticias = None
+    U.log("Monitor de noticias DESACTIVADO (Nitter caído). Activar con ACTIVAR_MONITOR_NOTICIAS=1")
 
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "100"))
 HORAS_VENTANA_PREVIA = 24
-DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby"]
+DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball"]
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _ultimo_aviso_ciego = 0.0
@@ -181,18 +185,6 @@ def _nuevo_stat():
             "sin_datos": 0, "analizados": 0, "alertas": 0, "errores": 0}
 
 
-def _historial(evento, lado):
-    fuente = fuente_espn if evento["fuente"] == "espn" else fuente_api_football
-    if fuente is None:
-        return []
-    return _seguro(fuente.historial_equipo, evento, lado, defecto=[]) or []
-
-
-def _h2h_desde_historial(hist_local, id_visita):
-    """Cruces directos que aparecen en el historial del local (solo lo que cubre la fuente)."""
-    return [p for p in hist_local if id_visita in (p.get("id_local"), p.get("id_visita"))]
-
-
 def _procesar_evento(ev, st, ahora_ts):
     clave = ev["clave"]
     if registro.visto(clave):
@@ -217,7 +209,6 @@ def _procesar_evento(ev, st, ahora_ts):
         sin_ranking = (ev["local"].get("ranking") is None and ev["visita"].get("ranking") is None
                        and not ev["local"].get("fuera_ranking") and not ev["visita"].get("fuera_ranking"))
         if sin_ranking:
-            # El ranking WTA no cargó: no se marca como visto para reintentar en el próximo barrido.
             st["sin_datos"] += 1
             return False
         st["analizados"] += 1
@@ -237,12 +228,13 @@ def _procesar_evento(ev, st, ahora_ts):
         registro.marcar(clave)
         return True
 
-    # --- Deportes de equipo ---
+    # --- Deportes de equipo: historial de varias fuentes ---
     id_loc, id_vis = ev["local"]["id"], ev["visita"]["id"]
-    forma_loc, forma_vis = _historial(ev, "local"), _historial(ev, "visita")
+
+    forma_loc = U.historial_desde_fuentes(ev, "local", fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football)
+    forma_vis = U.historial_desde_fuentes(ev, "visita", fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football)
+
     if not forma_loc or not forma_vis:
-        # Sin historial no hay análisis posible. No se marca como visto: se reintenta en el
-        # próximo barrido (por ejemplo, cuando se renueva la cuota de la API).
         st["sin_datos"] += 1
         return False
     st["analizados"] += 1
@@ -250,7 +242,9 @@ def _procesar_evento(ev, st, ahora_ts):
     perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc)
     perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis)
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
-    h2h = motor_mismatches.analizar_h2h_extendido(_h2h_desde_historial(forma_loc, id_vis), id_loc, id_vis)
+
+    h2h_raw = U.h2h_desde_fuentes(ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis)
+    h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
 
     res = motor_mismatches.evaluar_mismatch(
         deporte=deporte, perf_local=perf_loc, perf_visita=perf_vis,
@@ -282,10 +276,13 @@ def _procesar_evento(ev, st, ahora_ts):
 # BARRIDO
 # ---------------------------------------------------------------------------
 def _recolectar_eventos(resumen):
-    """Lista única de eventos de todas las fuentes (sin duplicados entre fuentes)."""
     por_clave = {}
-    for modulo, nombre in ((fuente_espn, "espn"), (fuente_api_football, "api_sports")):
+    fuentes = [(fuente_espn, "espn"), (fuente_api_football, "api_sports")]
+    for modulo, nombre in fuentes:
         if modulo is None:
+            continue
+        # Comprobar si está disponible (API-Sports puede estar deshabilitada)
+        if hasattr(modulo, "disponible") and not modulo.disponible():
             continue
         for deporte in DEPORTES_RADAR:
             try:
@@ -298,7 +295,7 @@ def _recolectar_eventos(resumen):
             st = resumen.setdefault(f"{nombre}:{deporte}", _nuevo_stat())
             st["eventos"] = len(eventos)
             for ev in eventos:
-                por_clave.setdefault(ev["clave"], ev)  # ESPN va primero: gana ante un duplicado
+                por_clave.setdefault(ev["clave"], ev)
     return list(por_clave.values())
 
 
@@ -318,7 +315,6 @@ def _imprimir_resumen(resumen):
 
 
 def _avisar_si_esta_ciego(resumen):
-    """Avisa por Telegram (máx. 1 vez cada 6 h) si ninguna fuente respondió bien en este barrido."""
     global _ultimo_aviso_ciego
     hubo_200 = any(codigos.get(200, 0) for codigos in U.ESTADISTICAS.values())
     hay_pedidos = any(sum(c.values()) for c in U.ESTADISTICAS.values())
@@ -348,11 +344,11 @@ def ejecutar_barrido_radar():
     analizados = 0
 
     eventos = _recolectar_eventos(resumen)
-    eventos.sort(key=lambda e: e.get("startTimestamp", 0))  # primero los que empiezan antes
+    eventos.sort(key=lambda e: e.get("startTimestamp", 0))
 
     for ev in eventos:
         if analizados >= MAX_ANALISIS_POR_CICLO:
-            U.log(f"Tope de {MAX_ANALISIS_POR_CICLO} análisis por ciclo: el resto sigue en el próximo barrido")
+            U.log(f"Tope de {MAX_ANALISIS_POR_CICLO} análisis por ciclo")
             break
         st = resumen.setdefault(f"{ev['fuente']}:{ev['deporte']}", _nuevo_stat())
         try:
@@ -372,11 +368,16 @@ def ejecutar_barrido_radar():
 if __name__ == "__main__":
     U.log("Radar Cuantitativo Multideporte Femenino 360° desplegado...")
     U.log(f"Persistencia: {U.modo_persistencia()}")
+
     fuentes = []
     if fuente_espn:
         fuentes.append("ESPN")
     if fuente_api_football and fuente_api_football.API_KEY:
         fuentes.append("API-Sports")
+    if fuente_highlightly and fuente_highlightly.disponible():
+        fuentes.append("Highlightly")
+    if fuente_oddspapi and fuente_oddspapi.disponible():
+        fuentes.append("OddsPapi")
     U.log(f"Fuentes activas: {', '.join(fuentes) or 'NINGUNA'}")
 
     aviso = (
@@ -385,10 +386,7 @@ if __name__ == "__main__":
         f"Persistencia: {html.escape(U.modo_persistencia())}"
     )
     if not U.persistencia_es_duradera():
-        aviso += (
-            "\n⚠️ Sin disco persistente: tras un deploy puede repetir alertas de partidos ya "
-            "avisados (solo los que sigan vigentes). Configurá UPSTASH_REDIS_REST_URL/TOKEN o DATA_DIR."
-        )
+        aviso += ("\n⚠️ Sin disco persistente: tras un deploy puede repetir alertas.")
     enviar_telegram(aviso)
 
     while True:
