@@ -1,145 +1,76 @@
 """
 fuentes_alternativas.py
-Conectores auxiliares para el Radar Femenino:
-- ITF World Tennis Tour (Cuadros oficiales, WC, Q, rankings)
-- AiScore / Feeds Multideporte
-- Validador de Cuotas (OddsPapi / The Odds API)
+ITF World Tennis Tour femenino (cuadros oficiales, Wild Cards, rankings).
+
+Se eliminaron `obtener_eventos_aiscore` y `validar_cuota_mercado`: no se usaban en
+ningún lado y la validación de cuotas ya la hace tracker_cuotas_smart.
+
+Nota: el endpoint de ITF no es una API oficial documentada. Si deja de responder,
+el resumen del barrido lo muestra (fuente "itf").
 """
 
-import requests
-import os
-from datetime import datetime
+import re
 
-HEADERS_ITF = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://www.itftennis.com/"
-}
+import utilidades as U
 
-HEADERS_AISCORE = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*"
-}
+try:
+    import motor_mismatches
+except Exception as e:  # el orquestador igual avisa si el motor no carga
+    motor_mismatches = None
+    U.log(f"[itf] no pude importar motor_mismatches: {e}")
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY")
-ODDSPAPI_API_KEY = os.environ.get("ODDSPAPI_API_KEY")
+HEADERS_ITF = dict(U.HEADERS_NAVEGADOR, Referer="https://www.itftennis.com/")
+
+_RE_TORNEO_FEM = re.compile(r"\bw\s?\d{2,3}\b|women")
+_ESTADOS_TERMINADOS = ("complet", "final", "walkover", "retired", "cancel", "abandon", "postpon")
 
 
-# ---------- 1. ITF WORLD TENNIS TOUR OFICIAL ----------
 def obtener_mismatches_itf():
     """
-    Consulta los torneos y partidos del circuito femenino ITF (W15 a W100).
-    Detecta Wild Cards (WC) y jugadoras no clasificadas frente a favoritas.
+    Partidos del circuito ITF femenino (W15 a W100) de hoy con asimetría de ranking
+    (incluye Wild Cards sin ranking). Simétrico: la favorita puede ser la local o la visita.
     """
-    hoy = datetime.now().strftime("%Y-%m-%d")
+    if motor_mismatches is None:
+        return []
+
+    hoy = U.fecha_arg()
     url = f"https://www.itftennis.com/api/v1/tournaments/order-of-play?date={hoy}&circuit=WTT"
-    mismatches_itf = []
+    data = U.get_json(url, "itf", headers=HEADERS_ITF, timeout=10)
+    if not isinstance(data, dict):
+        return []
 
-    try:
-        r = requests.get(url, headers=HEADERS_ITF, timeout=10)
-        if r.status_code != 200:
-            return []
+    resultados = []
+    for m in data.get("matches", []) or []:
+        if not isinstance(m, dict):
+            continue
 
-        data = r.json()
-        matches = data.get("matches", []) or []
+        nombre_torneo = m.get("tournamentName") or "ITF Women"
+        es_fem = m.get("isWomen") is True or bool(_RE_TORNEO_FEM.search(nombre_torneo.lower()))
+        if not es_fem:
+            continue
 
-        for m in matches:
-            if not m.get("isWomen"):
-                continue
+        estado = str(m.get("status") or m.get("matchStatus") or "").lower()
+        if any(k in estado for k in _ESTADOS_TERMINADOS):
+            continue
 
-            p1 = m.get("player1", {})
-            p2 = m.get("player2", {})
+        p1 = m.get("player1") or {}
+        p2 = m.get("player2") or {}
+        hay, detalle, favorito = motor_mismatches.evaluar_mismatch_tenis(
+            p1.get("name", ""), p2.get("name", ""),
+            p1.get("rank"), p2.get("rank"),
+            entry_local=p1.get("entryStatus"), entry_visita=p2.get("entryStatus"),
+        )
+        if not hay:
+            continue
 
-            entry_p1 = (p1.get("entryStatus") or "").upper()
-            entry_p2 = (p2.get("entryStatus") or "").upper()
-            rank_p1 = p1.get("rank")
-            rank_p2 = p2.get("rank")
+        resultados.append({
+            "id": f"itf_{m.get('id')}",
+            "torneo": nombre_torneo,
+            "local": p1.get("name") or "Jugadora 1",
+            "visita": p2.get("name") or "Jugadora 2",
+            "horario": m.get("scheduledTime") or "A confirmar",
+            "detalle": f"ITF Draw Oficial — {detalle}",
+            "favorito": favorito,
+        })
 
-            # Señal WC o Qualy sin ranking frente a profesional de cuadro principal
-            asimetria = False
-            detalle = ""
-
-            if entry_p1 == "WC" and (not rank_p1 or rank_p1 > 900) and (rank_p2 and rank_p2 < 450):
-                asimetria = True
-                detalle = f"ITF Draw Oficial: {p1.get('name')} entra por WC (sin ranking) vs {p2.get('name')} (Rank #{rank_p2})"
-            elif entry_p2 == "WC" and (not rank_p2 or rank_p2 > 900) and (rank_p1 and rank_p1 < 450):
-                asimetria = True
-                detalle = f"ITF Draw Oficial: {p2.get('name')} entra por WC (sin ranking) vs {p1.get('name')} (Rank #{rank_p1})"
-
-            if asimetria:
-                mismatches_itf.append({
-                    "id": f"itf_{m.get('id')}",
-                    "torneo": m.get("tournamentName", "ITF Women"),
-                    "local": p1.get("name", "Jugadora 1"),
-                    "visita": p2.get("name", "Jugadora 2"),
-                    "horario": m.get("scheduledTime", "A confirmar"),
-                    "detalle": detalle
-                })
-    except Exception:
-        pass
-
-    return mismatches_itf
-
-
-# ---------- 2. AISCORE (BÁSQUET, VÓLEY Y LIGAS FORMATIVAS) ----------
-def obtener_eventos_aiscore(deporte="basketball"):
-    """
-    Trae partidos programados desde el feed de AiScore para complementar ligas secundarias.
-    """
-    hoy = datetime.now().strftime("%Y-%m-%d")
-    url = f"https://api.aiscore.com/v1/m/match/list?sport={deporte}&date={hoy}"
-    try:
-        r = requests.get(url, headers=HEADERS_AISCORE, timeout=10)
-        if r.status_code == 200:
-            return r.json().get("data", []) or []
-    except Exception:
-        pass
-    return []
-
-
-# ---------- 3. VALIDACIÓN DE CUOTAS (ODDS CHECK) ----------
-def validar_cuota_mercado(equipo_favorito):
-    """
-    Verifica si las casas de apuestas ya reventaron la línea (1.01)
-    o si todavía se mantiene con valor para entrar en pre-partido.
-    """
-    if not ODDS_API_KEY:
-        return "Cuota no verificada (Sin API Key)"
-
-    url = "https://api.the-odds-api.com/v4/sports/upcoming/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": "eu",
-        "markets": "h2h,spreads"
-    }
-
-    try:
-        r = requests.get(url, params=params, timeout=8)
-        if r.status_code != 200:
-            return "Línea abierta (Revisar en bookie)"
-
-        eventos = r.json()
-        fav_clean = equipo_favorito.lower()
-
-        for ev in eventos:
-            nom_h = ev.get("home_team", "").lower()
-            nom_a = ev.get("away_team", "").lower()
-
-            if fav_clean in nom_h or fav_clean in nom_a:
-                bookmakers = ev.get("bookmakers", [])
-                if not bookmakers:
-                    continue
-
-                for b in bookmakers:
-                    for m in b.get("markets", []):
-                        if m.get("key") == "h2h":
-                            for out in m.get("outcomes", []):
-                                if fav_clean in out.get("name", "").lower():
-                                    cuota = out.get("price", 0.0)
-                                    if cuota <= 1.08:
-                                        return f"Cuota colapsada @{cuota} (Conviene esperar LIVE o Hándicap alto)"
-                                    return f"Cuota de entrada con valor @{cuota}"
-    except Exception:
-        pass
-
-    return "Línea disponible en bookies locales"
+    return resultados

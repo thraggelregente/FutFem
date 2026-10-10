@@ -1,111 +1,147 @@
 """
 metricas_profundas.py
-Métricas avanzadas in-game y de superficie:
-- Tennis Abstract: Dominio por superficie (Clay/Hard/Grass) y % retención de saque.
-- ScoreBing: Presión ofensiva en fútbol (córners a favor y tiros a puerta).
+Métricas de apoyo (solo se consultan para eventos que ya son mismatch):
+- Tennis Abstract / Sackmann: win rate de la FAVORITA en la superficie del partido.
+- ScoreBing: presión ofensiva (córners) de la favorita en fútbol.
 """
 
-import requests
-import re
+import csv
+import io
 from datetime import datetime
 
-HEADERS_GENERICO = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*"
-}
+import utilidades as U
 
-# ---------- 1. TENNIS ABSTRACT: MÉTRICAS DE SUPERFICIE ----------
+_cache_csv = U.CacheTTL(12 * 3600)
+_cache_presion = U.CacheTTL(6 * 3600)
+
+_URL_SACKMANN = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/{archivo}"
+
+
+# ---------- 1. TENIS: EFECTIVIDAD POR SUPERFICIE ----------
+def normalizar_superficie(texto):
+    t = (texto or "").lower()
+    if "clay" in t:
+        return "Clay"
+    if "grass" in t:
+        return "Grass"
+    if "carpet" in t:
+        return "Carpet"
+    if "hard" in t:
+        return "Hard"
+    return ""
+
+
+def _cargar_partidos_wta(anio):
+    """Lista de (superficie, ganadora_norm, perdedora_norm). Se cachea 12 h."""
+    hit, valor = _cache_csv.get(anio)
+    if hit:
+        return valor
+
+    filas = []
+    for archivo in (f"wta_matches_{anio}.csv", f"wta_matches_qual_itf_{anio}.csv"):
+        texto = U.get_texto(_URL_SACKMANN.format(archivo=archivo), "sackmann", timeout=20)
+        if not texto:
+            continue
+        for row in csv.DictReader(io.StringIO(texto)):
+            filas.append((
+                normalizar_superficie(row.get("surface")),
+                U.normalizar(row.get("winner_name")),
+                U.normalizar(row.get("loser_name")),
+            ))
+
+    if filas:
+        _cache_csv.set(anio, filas)
+    return filas
+
+
+def _partir_nombre(nombre):
+    """'Swiatek I.' -> (['swiatek'], 'i');  'Iga Swiatek' -> (['iga','swiatek'], None)."""
+    tokens = U.normalizar(nombre).split()
+    if len(tokens) >= 2 and len(tokens[-1]) == 1:
+        return tokens[:-1], tokens[-1]
+    return tokens, None
+
+
+def _es_la_jugadora(nombre_csv_norm, apellido_tokens, inicial):
+    toks = nombre_csv_norm.split()
+    if not toks or not apellido_tokens:
+        return False
+    if not all(t in toks for t in apellido_tokens):
+        return False
+    return inicial is None or toks[0].startswith(inicial)
+
+
 def consultar_perfil_tenis_abstract(nombre_jugadora, superficie="Hard"):
     """
-    Evalúa la efectividad histórica y reciente de una jugadora según la superficie.
-    Valores devueltos: % de victorias en superficie y % de quiebres/servicio.
+    Win rate de la jugadora en la superficie indicada (año actual + anterior, circuito
+    WTA + ITF). Si la superficie no se conoce no marca vulnerabilidad.
     """
-    nombre_formateado = nombre_jugadora.replace(" ", "_").strip()
-    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_{datetime.now().year}.csv"
-
-    # Perfil base de contingencia
+    superficie = normalizar_superficie(superficie)
     resultado = {
-        "superficie": superficie,
-        "efectividad_superficie": "Media / Regular",
-        "retencion_saque_estimada": 62.0,
-        "es_vulnerable_superficie": False
+        "superficie": superficie or "desconocida",
+        "efectividad_superficie": "Sin datos suficientes",
+        "es_vulnerable_superficie": False,
+        "muestras": 0,
     }
+    if not superficie or not nombre_jugadora:
+        return resultado
 
-    try:
-        # Búsqueda rápida sobre el registro público de Sackmann
-        r = requests.get(url, headers=HEADERS_GENERICO, timeout=8)
-        if r.status_code == 200:
-            lineas = r.text.split("\n")
-            victorias_sup = 0
-            derrotas_sup = 0
+    apellido, inicial = _partir_nombre(nombre_jugadora)
+    anio = datetime.now().year
+    victorias = derrotas = 0
 
-            for linea in lineas:
-                if nombre_formateado.lower() in linea.lower():
-                    campos = linea.split(",")
-                    if len(campos) > 10:
-                        sup_partido = campos[2].strip()
-                        ganadora = campos[10].strip()
+    for a in (anio, anio - 1):
+        for sup, ganadora, perdedora in _cargar_partidos_wta(a):
+            if sup != superficie:
+                continue
+            if _es_la_jugadora(ganadora, apellido, inicial):
+                victorias += 1
+            elif _es_la_jugadora(perdedora, apellido, inicial):
+                derrotas += 1
 
-                        if superficie.lower() in sup_partido.lower():
-                            if nombre_formateado.lower() in ganadora.lower():
-                                victorias_sup += 1
-                            else:
-                                derrotas_sup += 1
-
-            total = victorias_sup + derrotas_sup
-            if total >= 4:
-                win_rate = round((victorias_sup / total) * 100, 1)
-                resultado["win_rate_superficie"] = win_rate
-                resultado["es_vulnerable_superficie"] = win_rate < 40.0
-                resultado["efectividad_superficie"] = f"{win_rate}% ({victorias_sup}-{derrotas_sup})"
-    except Exception:
-        pass
-
+    total = victorias + derrotas
+    resultado["muestras"] = total
+    if total >= 4:
+        win_rate = round(victorias / total * 100, 1)
+        resultado["win_rate_superficie"] = win_rate
+        resultado["es_vulnerable_superficie"] = win_rate < 40.0
+        resultado["efectividad_superficie"] = f"{win_rate}% ({victorias}-{derrotas})"
     return resultado
 
 
-# ---------- 2. SCOREBING: PRESIÓN OFENSIVA (FÚTBOL) ----------
+# ---------- 2. FÚTBOL: PRESIÓN OFENSIVA (SCOREBING) ----------
 def obtener_presion_ofensiva_futbol(nombre_equipo):
-    """
-    Consulta métricas de presión ofensiva reciente:
-    - Promedio de córners a favor (generación de peligro)
-    - Promedio de córners concedidos
-    """
-    url = f"https://www.scorebing.com/ajax/search?q={nombre_equipo}"
-    metricas = {
-        "prom_corners_favor": 0.0,
-        "prom_corners_contra": 0.0,
-        "alta_presion": False
-    }
+    """Promedio de córners a favor / en contra. Endpoint no oficial: si falla, devuelve ceros."""
+    metricas = {"prom_corners_favor": 0.0, "prom_corners_contra": 0.0, "alta_presion": False}
+    if not nombre_equipo:
+        return metricas
 
-    try:
-        r = requests.get(url, headers=HEADERS_GENERICO, timeout=8)
-        if r.status_code != 200:
+    hit, valor = _cache_presion.get(nombre_equipo)
+    if hit:
+        return valor
+
+    data = U.get_json("https://www.scorebing.com/ajax/search", "scorebing",
+                      params={"q": nombre_equipo}, timeout=8)
+    teams = (data or {}).get("teams") if isinstance(data, dict) else None
+    team_id = teams[0].get("id") if teams else None
+    if not team_id:
+        return metricas
+
+    stats_raw = U.get_json("https://www.scorebing.com/ajax/team/corners", "scorebing",
+                           params={"team_id": team_id}, timeout=8)
+    if isinstance(stats_raw, dict):
+        stats = stats_raw.get("recent_corners", {}) or {}
+        try:
+            favor = float(stats.get("for_avg", 0.0))
+            contra = float(stats.get("against_avg", 0.0))
+        except (TypeError, ValueError):
             return metricas
-
-        data = r.json()
-        teams = data.get("teams", [])
-        if not teams:
-            return metricas
-
-        team_id = teams[0].get("id")
-        if not team_id:
-            return metricas
-
-        # Consulta de estadísticas de esquinas y presión
-        url_stats = f"https://www.scorebing.com/ajax/team/corners?team_id={team_id}"
-        r_stats = requests.get(url_stats, headers=HEADERS_GENERICO, timeout=8)
-        if r_stats.status_code == 200:
-            stats = r_stats.json().get("recent_corners", {})
-            corners_favor = stats.get("for_avg", 0.0)
-            corners_contra = stats.get("against_avg", 0.0)
-
-            metricas["prom_corners_favor"] = round(float(corners_favor), 1)
-            metricas["prom_corners_contra"] = round(float(corners_contra), 1)
-            # Alta presión: genera más de 6.5 córners y concede menos de 2.5
-            metricas["alta_presion"] = (float(corners_favor) >= 6.5 and float(corners_contra) <= 2.5)
-
-    except Exception:
-        pass
+        metricas.update({
+            "prom_corners_favor": round(favor, 1),
+            "prom_corners_contra": round(contra, 1),
+            # Alta presión: genera >= 6.5 córners y concede <= 2.5
+            "alta_presion": favor >= 6.5 and contra <= 2.5,
+        })
+        _cache_presion.set(nombre_equipo, metricas)
 
     return metricas
