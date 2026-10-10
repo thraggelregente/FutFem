@@ -317,6 +317,65 @@ class RegistroVistos:
 
 
 # ---------------------------------------------------------------------------
+# PRESUPUESTO DIARIO DE REQUESTS (APIs con cuota, p. ej. API-Sports 100/día)
+# ---------------------------------------------------------------------------
+class PresupuestoDiario:
+    """
+    Cuenta los requests gastados en el día (UTC, igual que el reinicio de API-Sports) y
+    los persiste, así un reinicio/deploy no "olvida" lo gastado. Nunca deja gastar la reserva.
+    """
+
+    def __init__(self, nombre, limite, reserva=8):
+        self.nombre = nombre
+        self.limite = max(1, int(limite))
+        self.reserva = max(0, int(reserva))
+        self.agotado_hasta_manana = False
+        crudo = cargar_json(f"presupuesto_{nombre}.json", {})
+        hoy = self._hoy()
+        if isinstance(crudo, dict) and crudo.get("fecha") == hoy:
+            self.fecha = hoy
+            self.usadas = int(crudo.get("usadas", 0) or 0)
+        else:
+            self.fecha = hoy
+            self.usadas = 0
+
+    @staticmethod
+    def _hoy():
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _rotar(self):
+        hoy = self._hoy()
+        if hoy != self.fecha:
+            self.fecha, self.usadas, self.agotado_hasta_manana = hoy, 0, False
+
+    def restantes(self):
+        self._rotar()
+        if self.agotado_hasta_manana:
+            return 0
+        return max(0, self.limite - self.reserva - self.usadas)
+
+    def puede_gastar(self, n=1):
+        return self.restantes() >= n
+
+    def registrar(self, n=1, restantes_reales=None):
+        """Suma n requests. Si la API informó cuántos le quedan, se corrige con ese dato."""
+        self._rotar()
+        self.usadas += n
+        if restantes_reales is not None:
+            try:
+                self.usadas = max(self.usadas, self.limite - int(restantes_reales))
+            except (TypeError, ValueError):
+                pass
+        guardar_json(f"presupuesto_{self.nombre}.json", {"fecha": self.fecha, "usadas": self.usadas})
+
+    def marcar_agotado(self):
+        self._rotar()
+        self.agotado_hasta_manana = True
+        self.usadas = self.limite
+        guardar_json(f"presupuesto_{self.nombre}.json", {"fecha": self.fecha, "usadas": self.usadas})
+
+
+# ---------------------------------------------------------------------------
 # NOMBRES
 # ---------------------------------------------------------------------------
 def normalizar(texto):
@@ -342,3 +401,46 @@ def nombres_coinciden(a, b):
     if not ta or not tb:
         return False
     return ta <= tb or tb <= ta
+
+
+# ---------------------------------------------------------------------------
+# FILTRO FEMENINO COMPARTIDO (todas las fuentes usan el mismo)
+# ---------------------------------------------------------------------------
+# Evidencia POSITIVA de torneo/equipo femenino. El texto se normaliza antes (sin tildes ni signos),
+# así "Division 1 Féminine", "Frauen-Bundesliga" o "Liga MX Femenil" quedan cubiertos.
+_RE_FEM = re.compile(
+    r"\b(women|womens|woman|wom|female|femenino|femenina|femenil|femeni|feminino|feminina|"
+    r"feminin|feminine|femminile|fem|frauen|damen|dames|ladies|vrouwen|kvinde\w*|kvinnor|"
+    r"damallsvenskan|toppserien|wta|wnba|nwsl|wsl|itf w|we league|liga f|"
+    r"w\s?(15|25|35|50|60|75|80|100))\b"
+)
+_RE_EQUIPO_W = re.compile(r"\bw$")  # "Arsenal W", "Barcelona (W)"
+
+
+def es_femenino(torneo="", local="", visita=""):
+    """
+    True si hay evidencia positiva de que el partido es femenino.
+    Antes se descartaba primero por palabras "masculinas" (bundesliga, serie a, liga mx...),
+    lo que eliminaba justo ligas femeninas como "Frauen-Bundesliga", "Serie A Femminile" o
+    "Liga MX Femenil". Ahora manda la evidencia femenina.
+    """
+    if _RE_FEM.search(normalizar(torneo)):
+        return True
+    for equipo in (local, visita):
+        n = normalizar(equipo)
+        if _RE_FEM.search(n) or _RE_EQUIPO_W.search(n):
+            return True
+    return False
+
+
+def clave_partido(local, visita, start_ts):
+    """
+    Clave estable para no alertar dos veces el mismo partido que llega de dos fuentes distintas
+    (ESPN y API-Sports nombran distinto: se usan los tokens significativos ordenados).
+    """
+    def firma(nombre):
+        toks = sorted(tokens_significativos(nombre))
+        return "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
+
+    dia = ts_a_arg(start_ts).strftime("%Y%m%d") if start_ts else "sinfecha"
+    return f"{firma(local)}|{firma(visita)}|{dia}"

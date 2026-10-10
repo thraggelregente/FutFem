@@ -7,5 +7,24 @@ services:
     plan: free
     healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: PORT
         value: 10000
+      # Secretos: cargalos en el panel de Render (sync: false = no se guardan en el repo)
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: CHAT_ID_GRUPO
+        sync: false
+      # Persistencia (gratis en upstash.com): evita alertas repetidas tras cada deploy
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      # Opcionales
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: ODDS_API_KEY
+        sync: false

@@ -2,20 +2,23 @@
 motor_mismatches.py
 Cerebro cuantitativo del Radar Femenino (simétrico: el favorito puede ser local o visitante).
 
-9 señales independientes, cada una suma puntos al lado al que favorece:
-  1. Tabla de la temporada vigente (efectividad + brecha de posiciones)   -> 2 pts
-  2. Contraste de forma reciente (rachas + diferencial por partido)       -> 2-3 pts
-  3. Triangulación de rivales en común                                    -> 1-3 pts
-  4. H2H extendido (12-36 meses)                                          -> 1-3 pts
-  5. Tenis: ranking + Wild Card                                           -> 1-3 pts
-  6. Descanso entre partidos                                              -> 0-1 pt
-  7. Bajas / lesiones                                                     -> 0-2 pts
-  8. Momentum (racha de victorias)                                        -> 0-2 pts
-  9. Clima / cancha neutral                                               -> 0-1 pt
+Señales que SUMAN puntos al lado al que favorecen:
+  1. Tabla de la temporada (efectividad + brecha)        -> 2 pts   (solo si hay tabla; hoy no se alimenta)
+  2. Contraste de forma reciente                         -> 2-3 pts
+  3. Triangulación de rivales en común                   -> 1-3 pts
+  4. H2H extendido (hasta 36 meses)                      -> 0.5-2 pts
+  5. Tenis: ranking / rival fuera del ranking / Wild Card -> 1-3 pts (camino aparte)
+  6. Descanso (el rival jugó hace <=3 días)              -> 0-1 pt
+  8. Momentum (racha de victorias) -> solo si la forma no sumó ya para ese lado
 
-Sistema de decisión:
-- Alerta si: puntaje_favorito >= 4 Y puntaje_rival <= 1
-- Confianza: Media (4-5) / Alta (6-7) / Muy Alta (8+)
+Las señales 7 (bajas/lesiones) y 9 (clima) NO están implementadas como señal numérica:
+las bajas llegan como texto desde monitor_noticias y solo se muestran en la alerta.
+
+Ojo: las señales 2, 3, 6 y 8 salen de los MISMOS últimos partidos, así que no son independientes;
+por eso el momentum no suma si la forma ya sumó.
+
+Decisión: alerta si puntaje_favorito >= 4 y puntaje_rival <= 1.
+Confianza: Media (4-5) / Alta (6-7) / Muy Alta (8+).
 """
 
 import os
@@ -188,7 +191,7 @@ def triangular_rivales(partidos_local, id_local, partidos_visita, id_visita):
 
 
 # ---------------------------------------------------------------------------
-# SEÑAL 4: H2H EXTENDIDO (con tu mejora)
+# SEÑAL 4: H2H EXTENDIDO
 # ---------------------------------------------------------------------------
 def analizar_h2h_extendido(historial_h2h, id_local, id_visita):
     """
@@ -250,38 +253,40 @@ def _es_wc(nombre, entry=None):
 
 
 def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
-                           entry_local=None, entry_visita=None):
+                           entry_local=None, entry_visita=None,
+                           fuera_local=False, fuera_visita=False):
     """
     Devuelve (hay_mismatch, detalle, favorito, puntos).
-    Sistema de niveles:
-    - Favorita top 30 vs WC sin ranking -> 3 pts (Rojo)
-    - Favorita top 100 vs WC sin ranking -> 2 pts (Naranja)
-    - Favorita top 200 vs WC sin ranking (ITF) -> 1 pt (Amarillo)
+    `fuera_*` = la jugadora no aparece en la lista de ranking consultada (equivale a "sin ranking
+    relevante"); sirve cuando la fuente solo informa el ranking de las cabezas de serie.
+    Niveles:
+    - Favorita top 30  vs sin ranking/Wild Card o rank > 500 -> 3 pts (Rojo)
+    - Favorita top 100 vs sin ranking/Wild Card o rank > 300 -> 2 pts (Naranja)
+    - Favorita top 200 vs sin ranking/Wild Card o rank > 250 -> 1 pt  (Amarillo)
     """
     rl, rv = _rank_valido(rank_local), _rank_valido(rank_visita)
     wc_l, wc_v = _es_wc(nombre_local, entry_local), _es_wc(nombre_visita, entry_visita)
 
-    for lado, nom_f, rk_f, nom_r, rk_r, wc_r in (
-        (LOCAL, nombre_local, rl, nombre_visita, rv, wc_v),
-        (VISITA, nombre_visita, rv, nombre_local, rl, wc_l),
+    def rival_flojo(rk_r, sin_ranking, minimo):
+        return (rk_r is None and sin_ranking) or (rk_r is not None and rk_r > minimo)
+
+    for lado, nom_f, rk_f, nom_r, rk_r, wc_r, fuera_r in (
+        (LOCAL, nombre_local, rl, nombre_visita, rv, wc_v, fuera_visita),
+        (VISITA, nombre_visita, rv, nombre_local, rl, wc_l, fuera_local),
     ):
         if rk_f is None:
             continue
-        # Sistema de niveles
-        puntos = 0
-        if rk_f <= 30 and (rk_r is None and wc_r or (rk_r and rk_r > 500)):
-            puntos = 3
-            nivel = "🔴 Rojo"
-        elif rk_f <= 100 and (rk_r is None and wc_r or (rk_r and rk_r > 300)):
-            puntos = 2
-            nivel = "🟠 Naranja"
-        elif rk_f <= 200 and (rk_r is None and wc_r or (rk_r and rk_r > 250)):
-            puntos = 1
-            nivel = "🟡 Amarillo"
+        sin_ranking = wc_r or fuera_r
+        if rk_f <= 30 and rival_flojo(rk_r, sin_ranking, 500):
+            puntos, nivel = 3, "🔴 Rojo"
+        elif rk_f <= 100 and rival_flojo(rk_r, sin_ranking, 300):
+            puntos, nivel = 2, "🟠 Naranja"
+        elif rk_f <= 200 and rival_flojo(rk_r, sin_ranking, 250):
+            puntos, nivel = 1, "🟡 Amarillo"
         else:
             continue
 
-        rival_txt = f"Rank #{rk_r}" if rk_r else "sin ranking"
+        rival_txt = f"Rank #{rk_r}" if rk_r else ("fuera del ranking" if fuera_r else "sin ranking")
         wc_txt = " (Wild Card)" if wc_r else ""
         detalle = f"{nivel}: {nom_f} (Rank #{rk_f}) vs {nom_r}{wc_txt} ({rival_txt})"
         return True, detalle, lado, puntos
@@ -293,24 +298,27 @@ def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
 # SEÑAL 6: DESCANSO
 # ---------------------------------------------------------------------------
 def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
-    """Evalúa si un equipo descansó más que el otro."""
-    def _dias_ultimo_partido(partidos, id_equipo):
-        for p in partidos[:3]:
+    """
+    Un equipo llega más descansado: el rival jugó hace <= 3 días y el otro lleva >= 4 días más
+    sin jugar (pero no más de 21: una inactividad larga no es "descanso", es un dato dudoso).
+    Los partidos deben venir ordenados del más reciente al más viejo.
+    """
+    def _dias_ultimo_partido(partidos):
+        for p in (partidos or [])[:3]:
             dias = calcular_dias_atras(p.get("fecha", ""))
             if dias < 90:
                 return dias
-        return 999
-
-    dias_a = _dias_ultimo_partido(partidos_a, id_a)
-    dias_b = _dias_ultimo_partido(partidos_b, id_b)
-
-    if dias_a == 999 or dias_b == 999:
         return None
 
-    if dias_a - dias_b >= 4:
+    dias_a = _dias_ultimo_partido(partidos_a)
+    dias_b = _dias_ultimo_partido(partidos_b)
+    if dias_a is None or dias_b is None:
+        return None
+
+    if dias_b <= 3 and 4 <= dias_a - dias_b and dias_a <= 21:
         return {"favorito": LOCAL, "dias_a": dias_a, "dias_b": dias_b,
                 "detalle": f"Descanso: local descansó {dias_a}d vs visita {dias_b}d"}
-    if dias_b - dias_a >= 4:
+    if dias_a <= 3 and 4 <= dias_b - dias_a and dias_b <= 21:
         return {"favorito": VISITA, "dias_a": dias_a, "dias_b": dias_b,
                 "detalle": f"Descanso: visita descansó {dias_b}d vs local {dias_a}d"}
     return None
@@ -363,7 +371,7 @@ def sugerir_mercado(deporte, favorito, nombre_fav=None):
 def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                      tabla_local_visita=None, datos_extra=None):
     """
-    Suma puntos por lado con las 9 señales.
+    Suma puntos por lado con las señales implementadas (ver docstring del módulo).
     Devuelve un dict con: hay_mismatch, favorito, puntaje, alertas, confianza.
     """
     puntos = {LOCAL: 0, VISITA: 0}
@@ -378,6 +386,7 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
         sumar(tabla_local_visita["favorito"], 2, tabla_local_visita["detalle"])
 
     # Señal 2: Forma reciente (2 pts base + 1 extra)
+    forma_sumo = {LOCAL: False, VISITA: False}
     umbral = obtener_umbral_deporte(deporte)
     if umbral is not None:
         perf = {LOCAL: perf_local, VISITA: perf_visita}
@@ -387,6 +396,7 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                 brecha = pf["dif_prom"] - pr["dif_prom"]
                 if brecha >= umbral:
                     extra = 1 if brecha >= umbral * 2 else 0
+                    forma_sumo[fav] = True
                     sumar(fav, 2 + extra, (
                         f"Forma: {fav} {pf['dif_prom']:+} por partido "
                         f"({pf['victorias']}V en {pf['muestras']}) vs rival "
@@ -431,9 +441,10 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
     if datos_extra:
         racha_loc = datos_extra.get("racha_local", 0)
         racha_vis = datos_extra.get("racha_visita", 0)
-        if racha_loc >= 4:
+        # Si la forma ya sumó para ese lado, la racha es la misma información: no se cuenta dos veces.
+        if racha_loc >= 4 and not forma_sumo[LOCAL]:
             sumar(LOCAL, 2 if racha_loc >= 6 else 1, f"Momentum: {LOCAL} {racha_loc} victorias seguidas")
-        if racha_vis >= 4:
+        if racha_vis >= 4 and not forma_sumo[VISITA]:
             sumar(VISITA, 2 if racha_vis >= 6 else 1, f"Momentum: {VISITA} {racha_vis} victorias seguidas")
 
     # Decisión
@@ -467,3 +478,5 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             "confianza": confianza,
         })
     return resultado
+
+

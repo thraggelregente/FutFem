@@ -180,3 +180,6 @@ def analizar_mercado_evento(equipo_local, equipo_visita, favorito=LOCAL, deporte
             }
 
     return {"disponible": False, "mensaje": "Evento sin liquidez o fuera de las casas comerciales"}
+
+
+
