@@ -30,23 +30,63 @@ services:
         sync: false
       - key: ODDSPAPI_API_KEY
         sync: false
-      # Límites (ajustables sin tocar código)
+
+      # ---------------------------------------------------------------------
+      # FRECUENCIA DEL RADAR
+      # ---------------------------------------------------------------------
+      - key: INTERVALO_REVISION
+        value: "3600"                 # 1 hora (antes 30 min)
+
+      # ---------------------------------------------------------------------
+      # ESPN (principal, sin cuota)
+      # ---------------------------------------------------------------------
+      - key: ESPN_HIST_DIAS
+        value: "45"                   # Días de historial por equipo
+
+      # ---------------------------------------------------------------------
+      # API-SPORTS (secundaria, cuota 100/día)
+      # ---------------------------------------------------------------------
       - key: API_SPORTS_DEPORTES
-        value: "Soccer"      # Solo Soccer (ahorra cuota)
+        value: "Soccer"               # Solo Soccer
       - key: API_SPORTS_MAX_LIGAS
-        value: "2"           # Máximo 2 ligas por deporte y por día
+        value: "1"                    # 1 liga por deporte y día
+      - key: API_FOOTBALL_DAILY_LIMIT
+        value: "100"
+      - key: API_FOOTBALL_RESERVA
+        value: "8"
+
+      # ---------------------------------------------------------------------
+      # HIGHLIGHTLY (cuota 100/día)
+      # ---------------------------------------------------------------------
       - key: HIGHLIGHTLY_DEPORTES
-        value: "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
-      - key: HIGHLIGHTLY_DAILY_LIMIT
-        value: "100"         # Se corrige solo con los headers x-ratelimit de la API
+        value: "Soccer,Volleyball"    # Solo 2 deportes (antes 5)
       - key: HIGHLIGHTLY_MAX_PAGINAS
-        value: "3"           # Páginas de 100 partidos por deporte y fecha
+        value: "1"                    # 1 página por deporte y fecha
+      - key: HIGHLIGHTLY_DAILY_LIMIT
+        value: "100"
+      - key: HIGHLIGHTLY_RESERVA
+        value: "5"
+      - key: HIGHLIGHTLY_RESERVA_ANALISIS
+        value: "20"                   # Reserva para forma/H2H/tablas
+
+      # ---------------------------------------------------------------------
+      # ODDSPAPI (secundaria, cuota 250/mes)
+      # ---------------------------------------------------------------------
       - key: ODDSPAPI_DEPORTES
         value: "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
       - key: ODDSPAPI_DAILY_LIMIT
-        value: "8"           # El plan Free da ~250 requests por mes
+        value: "8"                    # Máximo 8 requests/día
+      - key: ODDSPAPI_RESERVA
+        value: "0"
+      - key: ODDSPAPI_RESERVA_EVENTOS
+        value: "4"
       - key: ODDSPAPI_PROFUNDIDAD
-        value: "0"           # 1 = forma y H2H desde OddsPapi (gasta cuota)
+        value: "0"                    # 0 = no pide forma/H2H (ahorra cuota)
+
+      # ---------------------------------------------------------------------
+      # LÍMITES GENERALES
+      # ---------------------------------------------------------------------
       - key: MAX_ANALISIS_POR_CICLO
         value: "100"
-
+      - key: ACTIVAR_MONITOR_NOTICIAS
+        value: "0"                    # Nitter caído

@@ -109,7 +109,8 @@ fuente_api_football = _importar("fuente_api_football")
 fuente_highlightly = _importar("fuente_highlightly")
 fuente_oddspapi = _importar("fuente_oddspapi")
 
-INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
+# Intervalo de revisión: por defecto 1 hora (3600s). Ajustable con la variable de entorno.
+INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "3600"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "100"))
 HORAS_VENTANA_PREVIA = 24
@@ -375,4 +376,3 @@ if __name__ == "__main__":
         except Exception as e:
             U.log(f"Error en ciclo de barrido: {type(e).__name__}: {e}")
         time.sleep(INTERVALO_REVISION)
-
