@@ -84,24 +84,38 @@ def _registrar(fuente, codigo):
 
 def get_json(url, fuente, headers=None, params=None, timeout=10, proxies=None, info=None):
     """
-    GET que devuelve el JSON o None. Registra el código HTTP por fuente y deja
-    una línea en el log cuando algo falla. Los parámetros sensibles (API keys)
-    van en `params` y nunca se escriben en el log.
-    `info` (dict opcional) se completa con status y cabeceras de la respuesta.
+    GET que devuelve JSON. Si la fuente es Sofascore o da problemas de bloqueo,
+    utiliza emulación TLS (Chrome) para saltar Cloudflare sin necesidad de proxy.
     """
     try:
-        r = requests.get(
-            url, headers=headers or HEADERS_NAVEGADOR, params=params,
-            timeout=timeout, proxies=proxies
+        # Intento prioritario con emulación de navegador real
+        from curl_cffi import requests as curl_requests
+        r = curl_requests.get(
+            url,
+            headers=headers or HEADERS_NAVEGADOR,
+            params=params,
+            timeout=timeout,
+            impersonate="chrome124",
+            proxies=proxies
         )
-    except requests.RequestException as e:
-        _registrar(fuente, "error_red")
-        log(f"[{fuente}] error de red ({type(e).__name__}) en {url.split('?')[0]}")
-        return None
+    except Exception:
+        # Fallback a requests tradicional
+        try:
+            r = requests.get(
+                url,
+                headers=headers or HEADERS_NAVEGADOR,
+                params=params,
+                timeout=timeout,
+                proxies=proxies
+            )
+        except requests.RequestException as e:
+            _registrar(fuente, "error_red")
+            log(f"[{fuente}] error de red ({type(e).__name__}) en {url.split('?')[0]}")
+            return None
 
     if info is not None:
         info["status"] = r.status_code
-        info["headers"] = r.headers
+        info["headers"] = dict(r.headers)
 
     _registrar(fuente, r.status_code)
     if r.status_code != 200:
