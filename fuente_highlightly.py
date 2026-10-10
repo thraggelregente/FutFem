@@ -2,14 +2,14 @@
 fuente_highlightly.py
 Highlightly (https://highlightly.net/): fuente de EVENTOS femeninos y de datos de profundidad.
 
-Qué aporta (deportes: Soccer, Basketball, Ice Hockey, Handball, Volleyball):
-- Eventos: partidos de las próximas 24 h (GET /matches?date=), filtrados con el filtro femenino compartido.
+QuÃ© aporta (deportes: Soccer, Basketball, Ice Hockey, Handball, Volleyball):
+- Eventos: partidos de las prÃ³ximas 24 h (GET /matches?date=), filtrados con el filtro femenino compartido.
 - Forma reciente por equipo (GET /last-five-games?teamId=).
 - H2H por equipo (GET /head-2-head?teamIdOne=&teamIdTwo=). Los ids se resuelven por nombre (GET /teams?name=).
-- Tabla de posiciones (GET /standings?leagueId=&season=). La liga se deduce de los últimos partidos
+- Tabla de posiciones (GET /standings?leagueId=&season=). La liga se deduce de los Ãºltimos partidos
   que comparten los dos equipos.
 
-Autenticación: header x-rapidapi-key con la clave de Highlightly (HIGHLIGHTLY_API_KEY).
+AutenticaciÃ³n: header x-rapidapi-key con la clave de Highlightly (HIGHLIGHTLY_API_KEY).
 Hosts: cada deporte tiene su host propio (soccer.highlightly.net, volleyball.highlightly.net, ...) y
 tambien existe el host de la suscripcion All Sports (sports.highlightly.net/<deporte>/...). Con
 HIGHLIGHTLY_MODO=auto (por defecto) prueba el host del deporte y, si no responde (403/404), el de All Sports.
@@ -51,16 +51,40 @@ DEPORTES_ACTIVOS = [
         "HIGHLIGHTLY_DEPORTES", "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
     ).split(",") if d.strip() in _DEPORTES_HL
 ]
-MAX_PAGINAS = max(1, int(os.environ.get("HIGHLIGHTLY_MAX_PAGINAS", "3")))
+MAX_PAGINAS = max(1, int(os.environ.get("HIGHLIGHTLY_MAX_PAGINAS", "1")))
 RESERVA_ANALISIS = int(os.environ.get("HIGHLIGHTLY_RESERVA_ANALISIS", "40"))
 EXIGIR_FEMENINO = os.environ.get("HIGHLIGHTLY_EXIGIR_FEMENINO", "1") != "0"
+
+
+def _leer_ligas_femeninas():
+    """IDs verificados por el operador; formato: Soccer:123;Volleyball:456."""
+    resultado = {}
+    raw = (os.environ.get("HIGHLIGHTLY_WOMENS_LEAGUES") or "").strip()
+    for item in raw.replace(",", ";").split(";"):
+        item = item.strip()
+        if ":" not in item:
+            continue
+        deporte, league_id = (parte.strip() for parte in item.split(":", 1))
+        if deporte in _DEPORTES_HL and league_id.isdigit():
+            resultado.setdefault(deporte, set()).add(league_id)
+    return resultado
+
+
+_LIGAS_FEMENINAS = _leer_ligas_femeninas()
+
+
+def _liga_es_femenina(deporte, liga_id, nombre_liga, nombre_local, nombre_visita):
+    identificador = str(liga_id or "")
+    if identificador and identificador in _LIGAS_FEMENINAS.get(deporte, set()):
+        return True
+    return U.es_femenino(nombre_liga, nombre_local, nombre_visita)
 
 presupuesto = U.PresupuestoDiario(
     "highlightly", limite=os.environ.get("HIGHLIGHTLY_DAILY_LIMIT", "100"),
     reserva=os.environ.get("HIGHLIGHTLY_RESERVA", "5"),
 )
 
-_cache_eventos = U.CacheTTL(8 * 3600)
+_cache_eventos = U.CacheTTL(max(30, int(os.environ.get("HIGHLIGHTLY_CACHE_MINUTES", "240"))) * 60)
 _cache_equipo = U.CacheTTL(12 * 3600)
 _cache_forma = U.CacheTTL(3 * 3600)
 _cache_h2h = U.CacheTTL(6 * 3600)
@@ -68,6 +92,7 @@ _cache_tabla = U.CacheTTL(6 * 3600)
 _deshabilitada = {"motivo": ""}
 _base_ok = {}
 _avisos = set()
+_reintentar_despues = {}
 
 
 def _avisar_una_vez(clave, mensaje):
@@ -100,21 +125,25 @@ def _bases(deporte):
 
 
 def _get(deporte, ruta, params=None):
-    """Devuelve el JSON (dict o lista) o None si no se pudo (sin cuota, error, plan)."""
+    """Devuelve JSON o None; tras 403/404 alterna host una vez y enfría el endpoint."""
     if not disponible() or deporte not in _DEPORTES_HL:
         return None
+    clave_cooldown = (deporte, ruta)
+    if __import__("time").time() < _reintentar_despues.get(clave_cooldown, 0):
+        return None
+    estados_vistos = []
     for base, prefijo in _bases(deporte):
         if not presupuesto.puede_gastar(1):
             _avisar_una_vez(("presupuesto", presupuesto.fecha),
                             f"[highlightly] presupuesto diario agotado ({presupuesto.usadas}/{presupuesto.limite}); "
-                            "se reanuda mañana (UTC)")
+                            "se reanuda maÃ±ana (UTC)")
             return None
         info = {}
         data = U.get_json(f"{base}{prefijo}{ruta}", FUENTE, headers=_headers(), params=params,
                           timeout=15, info=info)
         status = info.get("status")
         if status is None:
-            continue  # error de red o host inexistente: get_json ya lo logueó
+            continue  # error de red o host inexistente: get_json ya lo logueÃ³
         h = {k.lower(): v for k, v in (info.get("headers") or {}).items()}
         try:
             if h.get("x-ratelimit-requests-limit") is not None:
@@ -124,18 +153,28 @@ def _get(deporte, ruta, params=None):
         presupuesto.registrar(1, restantes_reales=h.get("x-ratelimit-requests-remaining"))
         if status == 429:
             presupuesto.marcar_agotado()
-            _avisar_una_vez(("limite", presupuesto.fecha), "[highlightly] límite diario alcanzado (HTTP 429)")
+            _avisar_una_vez(("limite", presupuesto.fecha), "[highlightly] lÃ­mite diario alcanzado (HTTP 429)")
             return None
         if status == 401:
-            _deshabilitada["motivo"] = "HTTP 401: clave inválida"
+            _deshabilitada["motivo"] = "HTTP 401: clave invÃ¡lida"
             U.log(f"[highlightly] DESACTIVADA: {_deshabilitada['motivo']}")
             return None
         if status in (403, 404):
+            estados_vistos.append(status)
             continue
         if data is None:
+            import time
+            _reintentar_despues[clave_cooldown] = time.time() + 15 * 60
             return None
         _base_ok[deporte] = (base, prefijo)
+        _reintentar_despues.pop(clave_cooldown, None)
         return data
+    import time
+    if estados_vistos and all(estado in (403, 404) for estado in estados_vistos):
+        _reintentar_despues[clave_cooldown] = time.time() + 3 * 3600
+        _avisar_una_vez(("hosts", deporte, ruta), f"[highlightly/{deporte}] ambos hosts rechazaron {ruta}; se reintentará en 3 h")
+    elif estados_vistos:
+        _reintentar_despues[clave_cooldown] = time.time() + 15 * 60
     return None
 
 
@@ -149,7 +188,7 @@ def _lista(data):
 
 
 # ---------------------------------------------------------------------------
-# NORMALIZACIÓN
+# NORMALIZACIÃ“N
 # ---------------------------------------------------------------------------
 _RE_MARCADOR = re.compile(r"(\d+)\s*[-:]\s*(\d+)")
 
@@ -176,7 +215,7 @@ def _ts(fecha):
 
 
 def _normalizar_partido(m):
-    """Devuelve un dict común o None si el item no tiene la forma esperada."""
+    """Devuelve un dict comÃºn o None si el item no tiene la forma esperada."""
     try:
         h, a = m.get("homeTeam") or {}, m.get("awayTeam") or {}
         if m.get("id") is None or h.get("id") is None or a.get("id") is None:
@@ -218,7 +257,7 @@ def _como_historico(n, equipo_id=None, id_interno=None):
 
 
 # ---------------------------------------------------------------------------
-# EVENTOS (próximas 24 h)
+# EVENTOS (prÃ³ximas 24 h)
 # ---------------------------------------------------------------------------
 def _items_del_dia(deporte, fecha):
     clave = (deporte, fecha)
@@ -232,7 +271,7 @@ def _items_del_dia(deporte, fecha):
         data = _get(deporte, "/matches", {"date": fecha, "limit": limite, "offset": offset})
         if data is None:
             if pagina == 0:
-                return []  # no se cachea el fallo: se reintenta en el próximo barrido
+                return []  # no se cachea el fallo: se reintenta en el prÃ³ximo barrido
             break
         lista = _lista(data)
         items += [n for n in (_normalizar_partido(m) for m in lista) if n]
@@ -247,14 +286,14 @@ def _items_del_dia(deporte, fecha):
         if presupuesto.restantes() <= RESERVA_ANALISIS:
             break
     if total is not None and len(items) < total:
-        U.log(f"[highlightly/{deporte}] {fecha}: leí {len(items)} de {total} partidos "
-              f"(tope de {MAX_PAGINAS} páginas; HIGHLIGHTLY_MAX_PAGINAS lo amplía)")
+        U.log(f"[highlightly/{deporte}] {fecha}: leÃ­ {len(items)} de {total} partidos "
+              f"(tope de {MAX_PAGINAS} pÃ¡ginas; HIGHLIGHTLY_MAX_PAGINAS lo amplÃ­a)")
     _cache_eventos.set(clave, items)
     return items
 
 
 def obtener_eventos(deporte):
-    """Partidos FEMENINOS de las próximas 24 h (por nombre de liga/equipos)."""
+    """Partidos FEMENINOS de las prÃ³ximas 24 h (por nombre de liga/equipos)."""
     if deporte not in DEPORTES_ACTIVOS or not disponible():
         return []
     ahora = datetime.now(timezone.utc)
@@ -268,7 +307,9 @@ def obtener_eventos(deporte):
                 continue
             if not n["ts"] or n["ts"] < t0 or n["ts"] > t0 + HORAS_VENTANA * 3600:
                 continue
-            if not U.es_femenino(n["liga_nombre"], n["nom_local"], n["nom_visita"]):
+            if not _liga_es_femenina(
+                deporte, n["liga_id"], n["liga_nombre"], n["nom_local"], n["nom_visita"]
+            ):
                 continue
             torneo = f"{n['liga_nombre']} ({n['pais']})" if n["pais"] else n["liga_nombre"]
             por_id[n["id"]] = {
@@ -294,7 +335,7 @@ def obtener_eventos(deporte):
 def _elegir_equipo(nombre, candidatos):
     """
     Elige el candidato que coincide con `nombre`. Con EXIGIR_FEMENINO (por defecto) solo acepta equipos
-    con marca femenina en el nombre: así "Arsenal W" nunca se resuelve al Arsenal masculino.
+    con marca femenina en el nombre: asÃ­ "Arsenal W" nunca se resuelve al Arsenal masculino.
     """
     objetivo = U.normalizar(nombre)
     mejor, mejor_pts = None, 0
@@ -339,7 +380,7 @@ def _resolver_ids(nombre_local, nombre_visita, deporte, ids_hl=None):
 # FORMA RECIENTE
 # ---------------------------------------------------------------------------
 def _forma_cruda(deporte, equipo_id):
-    """Últimos partidos terminados del equipo (normalizados, más reciente primero)."""
+    """Ãšltimos partidos terminados del equipo (normalizados, mÃ¡s reciente primero)."""
     clave = (deporte, str(equipo_id))
     hit, valor = _cache_forma.get(clave)
     if hit:
@@ -364,7 +405,7 @@ def historial_equipo(evento, lado):
 
 
 def obtener_forma_reciente(nombre_equipo, deporte="Soccer", limite=6, id_interno=None):
-    """Últimos partidos de un equipo buscado por nombre, con el id del evento (`id_interno`)."""
+    """Ãšltimos partidos de un equipo buscado por nombre, con el id del evento (`id_interno`)."""
     equipo_id = _buscar_equipo(nombre_equipo, deporte)
     if not equipo_id:
         return []
@@ -453,7 +494,7 @@ def _standings(deporte, liga_id, season):
 
 
 def _liga_comun(partidos_a, partidos_b):
-    """(liga_id, season) más frecuente entre los últimos partidos de AMBOS equipos."""
+    """(liga_id, season) mÃ¡s frecuente entre los Ãºltimos partidos de AMBOS equipos."""
     def conteo(partidos):
         c = {}
         for n in partidos:
@@ -471,7 +512,7 @@ def _liga_comun(partidos_a, partidos_b):
 def obtener_tabla_partido(nombre_local, nombre_visita, deporte="Soccer", ids_hl=None):
     """
     Filas de tabla de los dos equipos en la liga que comparten: {"local": fila, "visita": fila,
-    "n_equipos": n} o None (sin liga común, sin tabla o equipos no encontrados).
+    "n_equipos": n} o None (sin liga comÃºn, sin tabla o equipos no encontrados).
     Cada fila: {posicion, victorias, empates, derrotas, dif_neta, nombre}.
     """
     if not disponible():
@@ -487,4 +528,3 @@ def obtener_tabla_partido(nombre_local, nombre_visita, deporte="Soccer", ids_hl=
         if hl_loc in por_id and hl_vis in por_id:
             return {"local": por_id[hl_loc], "visita": por_id[hl_vis], "n_equipos": len(filas)}
     return None
-

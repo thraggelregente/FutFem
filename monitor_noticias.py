@@ -1,11 +1,11 @@
 """
 monitor_noticias.py
-Noticias de último momento (bajas, lesiones, rotaciones) vía RSS de instancias Nitter.
+Noticias de Ãºltimo momento (bajas, lesiones, rotaciones) vÃ­a RSS de instancias Nitter.
 - Solo se consulta para eventos ya calificados como mismatch.
-- Solo cuenta publicaciones de las últimas 48 h que mencionen a alguno de los equipos.
-- Las instancias Nitter públicas suelen caerse o bloquearse: si ninguna responde,
-  el barrido lo deja en el log (fuente "nitter") y la alerta sale igual sin esta sección.
-  Podés definir tus instancias con la variable NITTER_INSTANCES (separadas por coma).
+- Solo cuenta publicaciones de las Ãºltimas 48 h que mencionen a alguno de los equipos.
+- Las instancias Nitter pÃºblicas suelen caerse o bloquearse: si ninguna responde,
+  el barrido lo deja en el log (fuente "nitter") y la alerta sale igual sin esta secciÃ³n.
+  PodÃ©s definir tus instancias con la variable NITTER_INSTANCES (separadas por coma).
 """
 
 import os
@@ -19,11 +19,11 @@ import utilidades as U
 LOCAL = "Local"
 VISITA = "Visitante"
 
-# Palabras específicas (se quitaron "subs", "lineup", "alineación", etc.: daban falsos positivos siempre)
+# Palabras especÃ­ficas (se quitaron "subs", "lineup", "alineaciÃ³n", etc.: daban falsos positivos siempre)
 PALABRAS_CLAVE_ROTACION = [
-    "rotacion", "rotación", "rotaciones", "suplentes", "juveniles", "descanso",
-    "bajas", "baja confirmada", "lesion", "lesión", "lesionada", "descartada",
-    "no jugará", "no jugara", "ausencia", "rotated", "injury", "injured",
+    "rotacion", "rotaciÃ³n", "rotaciones", "suplentes", "juveniles", "descanso",
+    "bajas", "baja confirmada", "lesion", "lesiÃ³n", "lesionada", "descartada",
+    "no jugarÃ¡", "no jugara", "ausencia", "rotated", "injury", "injured",
     "ruled out", "doubtful", "rested", "reserves",
 ]
 
@@ -53,7 +53,7 @@ def _es_reciente(item, horas=48):
             f = f.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) - f <= timedelta(hours=horas)
     except Exception:
-        return False  # sin fecha válida no lo uso
+        return False  # sin fecha vÃ¡lida no lo uso
 
 
 def _equipo_mencionado(contenido_norm, tokens_local, tokens_visita):
@@ -70,7 +70,7 @@ def buscar_novedades_partido(equipo_local, equipo_visita):
     Devuelve {alerta_novedad, fragmento, equipo (LOCAL/VISITA), ...}.
     El equipo permite al orquestador saber si la novedad afecta al favorito o a la rival.
     """
-    sin_novedad = {"alerta_novedad": False, "tipo": "Sin alertas de última hora", "fragmento": "", "equipo": None}
+    sin_novedad = {"alerta_novedad": False, "tipo": "Sin alertas de Ãºltima hora", "fragmento": "", "equipo": None}
 
     clave = f"{equipo_local}|{equipo_visita}"
     hit, valor = _cache.get(clave)
@@ -90,7 +90,7 @@ def buscar_novedades_partido(equipo_local, equipo_visita):
         try:
             root = ET.fromstring(texto)
         except ET.ParseError:
-            U.log(f"[nitter] RSS inválido en {instancia}")
+            U.log(f"[nitter] RSS invÃ¡lido en {instancia}")
             continue
 
         resultado = sin_novedad

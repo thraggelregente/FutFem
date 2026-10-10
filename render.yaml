@@ -2,97 +2,123 @@ services:
   - type: web
     name: radar-femenino-bot
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
-    plan: free
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: PORT
-        value: 10000
-      # Secretos: cargalos en el panel de Render (sync: false = no se guardan en el repo)
+
+      # Telegram (obligatorios para recibir alertas)
       - key: TELEGRAM_TOKEN
         sync: false
       - key: CHAT_ID
         sync: false
       - key: CHAT_ID_GRUPO
         sync: false
-      # Persistencia
+
+      # Estado y presupuesto persistentes entre deploys. Recomendado: Upstash Redis.
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      # Fuentes
+
+      # API-Sports: clave opcional; límite diario compartido por deportes.
       - key: API_FOOTBALL_KEY
         sync: false
-      - key: HIGHLIGHTLY_API_KEY
-        sync: false
-      - key: ODDSPAPI_API_KEY
-        sync: false
-
-      # ---------------------------------------------------------------------
-      # THESPORTSDB (gratuita, sin registro, límite 30 req/min)
-      # ---------------------------------------------------------------------
-      - key: THESPORTSDB_KEY
-        value: "123"
-
-      # ---------------------------------------------------------------------
-      # FRECUENCIA DEL RADAR
-      # ---------------------------------------------------------------------
-      - key: INTERVALO_REVISION
-        value: "3600"                 # 1 hora (antes 30 min)
-
-      # ---------------------------------------------------------------------
-      # ESPN (principal, sin cuota)
-      # ---------------------------------------------------------------------
-      - key: ESPN_HIST_DIAS
-        value: "45"                   # Días de historial por equipo
-
-      # ---------------------------------------------------------------------
-      # API-SPORTS (secundaria, cuota 100/día)
-      # ---------------------------------------------------------------------
       - key: API_SPORTS_DEPORTES
-        value: "Soccer"               # Solo Soccer
+        value: Soccer,Basketball,Volleyball,Ice Hockey,Handball,Rugby
       - key: API_SPORTS_MAX_LIGAS
-        value: "1"                    # 1 liga por deporte y día
+        value: "1"
       - key: API_FOOTBALL_DAILY_LIMIT
         value: "100"
       - key: API_FOOTBALL_RESERVA
-        value: "8"
+        value: "12"
+      # IDs de competición femenina para nombres neutrales. Agregar solo IDs verificados.
+      - key: API_SPORTS_WOMENS_LEAGUES
+        value: ""
 
-      # ---------------------------------------------------------------------
-      # HIGHLIGHTLY (cuota 100/día)
-      # ---------------------------------------------------------------------
+      # Highlightly: clave opcional; cobertura de eventos y profundidad según el plan.
+      - key: HIGHLIGHTLY_API_KEY
+        sync: false
       - key: HIGHLIGHTLY_DEPORTES
-        value: "Soccer,Volleyball"    # Solo 2 deportes (antes 5)
+        value: Soccer,Volleyball,Handball,Basketball,Ice Hockey
       - key: HIGHLIGHTLY_MAX_PAGINAS
-        value: "1"                    # 1 página por deporte y fecha
+        value: "1"
+      - key: HIGHLIGHTLY_CACHE_MINUTES
+        value: "240"
       - key: HIGHLIGHTLY_DAILY_LIMIT
         value: "100"
       - key: HIGHLIGHTLY_RESERVA
         value: "5"
       - key: HIGHLIGHTLY_RESERVA_ANALISIS
-        value: "20"                   # Reserva para forma/H2H/tablas
+        value: "25"
+      - key: HIGHLIGHTLY_WOMENS_LEAGUES
+        value: ""
 
-      # ---------------------------------------------------------------------
-      # ODDSPAPI (secundaria, cuota 250/mes)
-      # ---------------------------------------------------------------------
+      # OddsPapi queda restringida a fixtures; no se llama a /odds, /markets ni /bookmakers.
+      - key: ODDSPAPI_API_KEY
+        sync: false
       - key: ODDSPAPI_DEPORTES
-        value: "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
+        value: Soccer,Volleyball,Handball,Basketball,Ice Hockey,Tennis,Rugby
       - key: ODDSPAPI_DAILY_LIMIT
-        value: "8"                    # Máximo 8 requests/día
+        value: "6"
       - key: ODDSPAPI_RESERVA
         value: "0"
       - key: ODDSPAPI_RESERVA_EVENTOS
-        value: "4"
+        value: "1"
+      - key: ODDSPAPI_MONTHLY_LIMIT
+        value: "180"
+      - key: ODDSPAPI_RESERVA_CUOTA_REAL
+        value: "25"
+      - key: ODDSPAPI_CONTROL_CUOTA_REAL
+        value: "1"
+      - key: ODDSPAPI_CUOTA_REAL_CACHE_HORAS
+        value: "6"
+      - key: ODDSPAPI_CACHE_MINUTOS
+        value: "240"
       - key: ODDSPAPI_PROFUNDIDAD
-        value: "0"                    # 0 = no pide forma/H2H (ahorra cuota)
+        value: "0"
+      # Agregar solo IDs que estén verificados como torneos femeninos.
+      - key: ODDSPAPI_WOMENS_TOURNAMENT_IDS
+        value: ""
 
-      # ---------------------------------------------------------------------
-      # LÍMITES GENERALES
-      # ---------------------------------------------------------------------
+      # TheSportsDB V1 gratuito usa key 123, con respuestas limitadas por endpoint.
+      # Para fixtures fiables configurar IDs verificados como femeninos, por deporte.
+      # Formato: Soccer:ID1,Soccer:ID2,Basketball:ID3
+      - key: THESPORTSDB_KEY
+        value: "123"
+      - key: THESPORTSDB_WOMENS_LEAGUES
+        value: "Soccer:5106,Soccer:4521,Soccer:3541,Soccer:3717,Soccer:3712,Soccer:3330"
+      - key: THESPORTSDB_BUSQUEDA_GLOBAL
+        value: "0"
+      - key: THESPORTSDB_CACHE_MINUTOS
+        value: "240"
+
+      # OpenLigaDB: gratis, sin API key; por defecto Frauen-Bundesliga de la temporada 2026.
+      # Formato: shortcut:temporada; confirmar temporada/shortcut al cambiar de año.
+      - key: OPENLIGADB_WOMENS_LEAGUES
+        value: "ffb1:2026"
+      - key: OPENLIGADB_CACHE_MINUTOS
+        value: "120"
+      - key: OPENLIGADB_VENTANA_HORAS
+        value: "36"
+
+      # ESPN es respaldo (incluye WTA/rankings); los otros proveedores tienen mayor prioridad.
+      - key: ESPN_ACTIVO
+        value: "1"
+      - key: ESPN_SCOREBOARD_CACHE_MINUTES
+        value: "180"
+      - key: ESPN_HIST_DIAS
+        value: "45"
+
+      # Frecuencia. El servicio Free de Render puede dormir si no recibe tráfico externo.
+      - key: INTERVALO_REVISION
+        value: "900"
+      - key: HORAS_VENTANA_PREVIA
+        value: "24"
       - key: MAX_ANALISIS_POR_CICLO
         value: "100"
       - key: ACTIVAR_MONITOR_NOTICIAS
-        value: "0"                    # Nitter caído
+        value: "0"

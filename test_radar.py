@@ -1,5 +1,5 @@
 """
-test_radar.py — pruebas offline del radar (no usan internet ni Telegram).
+test_radar.py â€” pruebas offline del radar (no usan internet ni Telegram).
 Uso:  python test_radar.py
 Cada escenario corre en un proceso aparte para que no se contaminen los caches.
 """
@@ -7,10 +7,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 
 ESCENARIOS = ["espn_futbol", "espn_tenis", "api_sports", "cuota_agotada", "dedupe_y_repeticion", "filtros",
-              "highlightly", "highlightly_nombres", "oddspapi"]
+              "highlightly", "highlightly_nombres", "oddspapi", "reevalua_sin_datos",
+              "openligadb", "thesportsdb_allowlist", "thesportsdb_sin_timestamp"]
 
 
 def iso(horas=0, dias=0, z=True):
@@ -104,12 +106,12 @@ def escenario_espn_futbol():
     main.DEPORTES_RADAR = ["Soccer"]
     main.ejecutar_barrido_radar()
     alertas = [m for m in msgs if "MISMATCH" in m]
-    ok(len(alertas) == 1, f"1 alerta de fútbol (hubo {len(alertas)})")
+    ok(len(alertas) == 1, f"1 alerta de fÃºtbol (hubo {len(alertas)})")
     ok("Alpha W" in alertas[0] and "Favorito:</b> Alpha W" in alertas[0], "el favorito es Alpha W (local)")
-    ok("Triangulación" in alertas[0] and "Forma" in alertas[0], "incluye forma y triangulación")
+    ok("TriangulaciÃ³n" in alertas[0] and "Forma" in alertas[0], "incluye forma y triangulaciÃ³n")
     ok("Momentum" not in alertas[0], "el momentum no se cuenta dos veces")
-    ok("Estado del mercado" not in alertas[0], "la alerta no trae sección de cuotas")
-    ok("ðŸ" not in alertas[0] and "🚨" in alertas[0], "los emojis salen bien")
+    ok("Estado del mercado" not in alertas[0], "la alerta no trae secciÃ³n de cuotas")
+    ok("Ã°Å¸" not in alertas[0] and "🚨" in alertas[0], "los emojis salen bien")
 
 
 def escenario_espn_tenis():
@@ -168,14 +170,14 @@ def escenario_api_sports():
     main.ejecutar_barrido_radar()
     alertas = [m for m in msgs if "MISMATCH" in m]
     ok(len(alertas) == 1, f"1 alerta con API-Sports (hubo {len(alertas)})")
-    ok("Bayern Frauen" in alertas[0] and "Bayern vs" not in alertas[0], "se analizó la liga femenina y NO la masculina")
+    ok("Bayern Frauen" in alertas[0] and "Bayern vs" not in alertas[0], "se analizÃ³ la liga femenina y NO la masculina")
     fixtures_por_fecha = [c for c in llamadas if "date" in c[1]]
     fixtures_por_liga = [c for c in llamadas if "league" in c[1]]
-    ok(len(fixtures_por_fecha) == 2, f"2 pedidos de listado (hoy y mañana), hubo {len(fixtures_por_fecha)}")
+    ok(len(fixtures_por_fecha) == 2, f"2 pedidos de listado (hoy y maÃ±ana), hubo {len(fixtures_por_fecha)}")
     ok(len(fixtures_por_liga) == 1, f"1 pedido de historial para toda la liga (antes: 3 por partido), hubo {len(fixtures_por_liga)}")
     ok(len(llamadas) == 3, f"3 requests en total para el barrido completo ({len(llamadas)})")
     ok(main.fuente_api_football.DEPORTES_ACTIVOS == ["Soccer"], "API-Sports consulta solo Soccer por defecto")
-    ok(main.fuente_api_football.MAX_LIGAS_POR_DEPORTE == 2, "máximo 2 ligas por deporte")
+    ok(main.fuente_api_football.MAX_LIGAS_POR_DEPORTE == 2, "mÃ¡ximo 2 ligas por deporte")
 
 
 def escenario_cuota_agotada():
@@ -196,8 +198,8 @@ def escenario_cuota_agotada():
     main.DEPORTES_RADAR = ["Soccer"]
     main.ejecutar_barrido_radar()
     main.ejecutar_barrido_radar()
-    ok(len(llamadas) == 1, f"tras el error de cuota no vuelve a pedir en todo el día (pedidos: {len(llamadas)})")
-    ok(main.fuente_api_football.presupuesto.restantes() == 0, "el presupuesto queda en 0 hasta mañana")
+    ok(len(llamadas) == 1, f"tras el error de cuota no vuelve a pedir en todo el dÃ­a (pedidos: {len(llamadas)})")
+    ok(main.fuente_api_football.presupuesto.restantes() == 0, "el presupuesto queda en 0 hasta maÃ±ana")
 
     os.environ["API_FOOTBALL_DAILY_LIMIT"] = "10"
 
@@ -250,7 +252,7 @@ def escenario_filtros():
     # Motor
     import motor_mismatches as M
     hay, det, fav, pts = M.evaluar_mismatch_tenis("A", "B", 8, None, fuera_visita=True)
-    ok(hay and fav == M.LOCAL and pts == 3 and "🔴" in det, "tenis: top 8 vs fuera del ranking = 3 pts, emoji OK")
+    ok(hay and fav == M.LOCAL and pts == 3 and "ðŸ”´" in det, "tenis: top 8 vs fuera del ranking = 3 pts, emoji OK")
     hay, *_ = M.evaluar_mismatch_tenis("A", "B", 8, None)
     ok(not hay, "tenis: sin dato de rival NO es mismatch (no se inventa)")
 
@@ -325,11 +327,11 @@ def escenario_highlightly():
     alertas = [m for m in msgs if "MISMATCH" in m]
     ok(len(alertas) == 1, f"1 alerta con eventos de Highlightly (hubo {len(alertas)}): la liga masculina y el partido terminado se ignoran")
     ok("Favorito:</b> Bayern Frauen" in alertas[0], "el favorito es Bayern Frauen")
-    ok("H2H" in alertas[0] and "Forma" in alertas[0] and "Triangulación" in alertas[0], "incluye forma, triangulación y H2H")
-    ok("Estado del mercado" not in alertas[0], "sin sección de cuotas")
+    ok("H2H" in alertas[0] and "Forma" in alertas[0] and "TriangulaciÃ³n" in alertas[0], "incluye forma, triangulaciÃ³n y H2H")
+    ok("Estado del mercado" not in alertas[0], "sin secciÃ³n de cuotas")
     ok(all(h.get("x-rapidapi-key") == "clave-falsa" for _, _, h in llamadas), "autentica con el header x-rapidapi-key")
     ok(all("/v1/" not in u for u, _, _ in llamadas), "usa las rutas actuales (sin /v1/)")
-    ok(sum(1 for u, _, _ in llamadas if u.endswith("/matches")) == 2, "1 pedido de partidos por fecha (hoy y mañana)")
+    ok(sum(1 for u, _, _ in llamadas if u.endswith("/matches")) == 2, "1 pedido de partidos por fecha (hoy y maÃ±ana)")
 
     # tabla de posiciones, con los ids del evento
     ev = main.fuente_highlightly.obtener_eventos("Soccer")[0]
@@ -376,7 +378,7 @@ def escenario_highlightly_nombres():
     h2h = hl.obtener_h2h("Alpha W", "Beta W", "Soccer", id_local="1", id_visita="2")
     ok(len(h2h) == 2, f"2 cruces de H2H (hubo {len(h2h)})")
     ok((h2h[0]["id_local"], h2h[0]["id_visita"], h2h[0]["puntos_local"], h2h[0]["puntos_visita"]) == ("2", "1", 0, 2),
-       "el H2H usa los ids del evento y conserva quién fue local ese día (Beta local perdió 0-2 con Alpha)")
+       "el H2H usa los ids del evento y conserva quiÃ©n fue local ese dÃ­a (Beta local perdiÃ³ 0-2 con Alpha)")
     import motor_mismatches as M
     h = M.analizar_h2h_extendido(h2h, "1", "2")
     ok([x["ganador"] for x in h["reciente"]] == [M.LOCAL, M.LOCAL], "el motor lee los dos cruces como victorias del local actual")
@@ -422,12 +424,126 @@ def escenario_oddspapi():
     op = main.fuente_oddspapi
     soccer = op.obtener_eventos("Soccer")
     voley = op.obtener_eventos("Volleyball")
-    ok(len(soccer) == 1 and soccer[0]["local"]["nombre"] == "Barcelona", f"1 evento femenino de fútbol (hubo {len(soccer)}): La Liga masculina, +24 h y terminados se ignoran")
-    ok(len(voley) == 1, "1 evento femenino de vóley")
-    ok(len(llamadas) == 1, f"1 solo pedido para todos los deportes (hubo {len(llamadas)})")
-    ok("sportId" not in llamadas[0][1] and llamadas[0][2].get("X-API-Key") == "clave-falsa", "sin sportId y con header X-API-Key")
+    ok(len(soccer) == 1 and soccer[0]["local"]["nombre"] == "Barcelona", f"1 evento femenino de fÃºtbol (hubo {len(soccer)}): La Liga masculina, +24 h y terminados se ignoran")
+    ok(len(voley) == 1, "1 evento femenino de vÃ³ley")
+    billables = [x for x in llamadas if x[0].rstrip("/").endswith("/fixtures")]
+    ok(len(billables) == 1, f"1 solo pedido billable de fixtures para todos los deportes (hubo {len(billables)})")
+    ok("sportId" not in billables[0][1] and billables[0][1].get("apiKey") == "clave-falsa" and billables[0][2].get("X-API-Key") == "clave-falsa", "fixture global autentica con apiKey y header compatible")
+    ok(not any("/odds" in x[0] or "/markets" in x[0] or "/bookmakers" in x[0] for x in llamadas), "no consulta cuotas, mercados ni bookmakers")
     ok(op.obtener_h2h(soccer[0]) == [] and op.historial_equipo(soccer[0], "local") == [], "forma y H2H apagados por defecto (no gastan cuota)")
-    ok(len(llamadas) == 1, "forma / H2H apagados no hacen pedidos")
+    ok(len([x for x in llamadas if x[0].rstrip("/").endswith("/fixtures")]) == 1, "forma / H2H apagados no hacen requests billable adicionales")
+    ok(op.presupuesto.usadas == 1, "el control de cuota /account no consume el contador diario billable")
+
+
+# ---------------------------------------------------------------------------
+# REGRESIONES DE AUDITORÍA: no silenciar partidos sin evidencia y validar fuentes gratuitas.
+# ---------------------------------------------------------------------------
+def escenario_reevalua_sin_datos():
+    U, main, mensajes = montar(fake_espn)
+    main.DEPORTES_RADAR = []
+    main.fuente_api_football = None
+    ahora = int(datetime.now(timezone.utc).timestamp())
+    ev = {
+        "id": "fixture-regresion-1",
+        "clave": "no-es-clave-canonica",
+        "deporte": "Soccer",
+        "torneo": "Women's Super League",
+        "local": {"id": "A", "nombre": "Alpha W", "ranking": None, "fuera_ranking": False},
+        "visita": {"id": "B", "nombre": "Beta W", "ranking": None, "fuera_ranking": False},
+        "horario": "A confirmar",
+        "tipo_estado": "pre",
+        "startTimestamp": ahora + 4 * 3600,
+        "fuente": "espn",
+        "femenino_seguro": True,
+    }
+    main._historial_equipo = lambda evento, lado: []
+    clave = main._clave_canonica_evento(ev)
+    stat = main._nuevo_stat()
+    main._procesar_evento(ev, stat, time.time())
+    main._procesar_evento(ev, stat, time.time())
+    ok(stat["sin_datos"] == 2, "un partido sin historial se intenta de nuevo en el ciclo siguiente")
+    ok(not main.registro.visto(clave), "un análisis incompleto no se marca como alerta ya enviada")
+    ok(not mensajes, "no se genera alerta sin evidencia deportiva suficiente")
+
+
+def escenario_openligadb():
+    os.environ["OPENLIGADB_WOMENS_LEAGUES"] = "ffb1:2026"
+    ahora = datetime.now(timezone.utc)
+    def partido(pid, fecha, acabado, local_id, local, visita_id, visita, gl=None, ga=None):
+        resultados = [] if gl is None or ga is None else [{
+            "ResultTypeID": 2, "ResultOrderID": 1, "PointsTeam1": gl, "PointsTeam2": ga,
+        }]
+        return {
+            "MatchID": pid,
+            "MatchDateTimeUTC": fecha.isoformat().replace("+00:00", "Z"),
+            "MatchIsFinished": acabado,
+            "LeagueName": "Frauen Fußballbundesliga",
+            "LeagueShortcut": "ffb1",
+            "LeagueSeason": 2026,
+            "Team1": {"TeamId": local_id, "TeamName": local},
+            "Team2": {"TeamId": visita_id, "TeamName": visita},
+            "MatchResults": resultados,
+        }
+    datos = [
+        partido(1, ahora + timedelta(hours=6), False, 11, "Bayern Frauen", 12, "Koln Frauen"),
+        partido(2, ahora - timedelta(days=4), True, 11, "Bayern Frauen", 13, "Frankfurt Frauen", 3, 1),
+    ]
+    def fake(url, fuente, headers=None, params=None, timeout=0, proxies=None, info=None):
+        if "api.openligadb.de/getmatchdata/ffb1/2026" in url:
+            return datos
+        return fake_espn(url, fuente, headers, params, timeout, proxies, info)
+    U, main, mensajes = montar(fake)
+    source = main.fuente_openligadb
+    eventos = source.obtener_eventos("Soccer")
+    ok(len(eventos) == 1 and eventos[0]["local"]["nombre"] == "Bayern Frauen", "OpenLigaDB captura el fixture de la liga femenina configurada")
+    forma = source.obtener_forma_reciente("Bayern Frauen", id_interno=eventos[0]["local"]["id"])
+    ok(len(forma) == 1 and forma[0]["puntos_local"] == 3 and forma[0]["id_local"] == eventos[0]["local"]["id"], "OpenLigaDB aporta resultados previos y conserva el ID del equipo evaluado")
+    ok(eventos[0]["femenino_seguro"] is True, "la clasificación femenina se basa en la allowlist del torneo, no en el nombre de los clubes")
+
+
+def escenario_thesportsdb_allowlist():
+    os.environ["THESPORTSDB_KEY"] = "123"
+    os.environ["THESPORTSDB_WOMENS_LEAGUES"] = "Soccer:1234"
+    os.environ["THESPORTSDB_BUSQUEDA_GLOBAL"] = "0"
+    ahora = datetime.now(timezone.utc) + timedelta(hours=6)
+    fecha_evento = ahora.isoformat().replace("+00:00", "Z")
+    llamadas = []
+    def fake(url, fuente, headers=None, params=None, timeout=0, proxies=None, info=None):
+        if "thesportsdb.com" in url:
+            llamadas.append((url, dict(params or {})))
+            return {"events": [
+                {"idEvent": "fem-1", "idLeague": "1234", "strLeague": "Liga regular", "strSport": "Soccer",
+                 "strHomeTeam": "Equipo Azul", "strAwayTeam": "Equipo Rojo", "strTimestamp": fecha_evento,
+                 "strStatus": "Not Started", "idHomeTeam": "1", "idAwayTeam": "2"},
+                {"idEvent": "masc-1", "idLeague": "9999", "strLeague": "Premier League", "strSport": "Soccer",
+                 "strHomeTeam": "Equipo A", "strAwayTeam": "Equipo B", "strTimestamp": fecha_evento,
+                 "strStatus": "Not Started", "idHomeTeam": "3", "idAwayTeam": "4"},
+            ]}
+        return fake_espn(url, fuente, headers, params, timeout, proxies, info)
+    U, main, mensajes = montar(fake)
+    source = main.fuente_thesportsdb
+    eventos = source.obtener_eventos("Soccer")
+    ok(len(eventos) == 1 and eventos[0]["id"] == "thesportsdb_fem-1", "TheSportsDB usa ID de liga configurado para aceptar una competición femenina con nombre neutral")
+    ok(bool(llamadas) and all(x[1].get("l") == "1234" for x in llamadas), "TheSportsDB consulta por liga y evita el endpoint global limitado")
+
+
+
+def escenario_thesportsdb_sin_timestamp():
+    os.environ["THESPORTSDB_KEY"] = "123"
+    os.environ["THESPORTSDB_WOMENS_LEAGUES"] = "Soccer:1234"
+    os.environ["THESPORTSDB_BUSQUEDA_GLOBAL"] = "0"
+    fecha_evento = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat().replace("+00:00", "Z")
+    def fake(url, fuente, headers=None, params=None, timeout=0, proxies=None, info=None):
+        if "thesportsdb.com" in url:
+            return {"events": [
+                {"idEvent": "no-time", "idLeague": "1234", "strLeague": "Liga F",
+                 "strHomeTeam": "Equipo Uno", "strAwayTeam": "Equipo Dos",
+                 "dateEvent": fecha_evento[:10], "strTime": "18:30:00", "strStatus": "Not Started"},
+            ]}
+        return fake_espn(url, fuente, headers, params, timeout, proxies, info)
+    U, main, mensajes = montar(fake)
+    eventos = main.fuente_thesportsdb.obtener_eventos("Soccer")
+    ok(eventos == [], "TheSportsDB descarta hora local sin zona horaria para no inventar el UTC")
 
 
 if __name__ == "__main__":

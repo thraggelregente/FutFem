@@ -1,25 +1,25 @@
 """
 fuente_api_football.py
-API-Sports (https://www.api-sports.io/): fuente SECUNDARIA, con cuota (Free = 100 requests/día
+API-Sports (https://www.api-sports.io/): fuente SECUNDARIA, con cuota (Free = 100 requests/dÃ­a
 COMPARTIDOS entre todos los deportes). ESPN es la principal; esta suma deportes y ligas que ESPN
-no cubre (handball, vóley, rugby, más fútbol).
+no cubre (handball, vÃ³ley, rugby, mÃ¡s fÃºtbol).
 
-Por defecto consulta SOLO Soccer y pide el historial de como máximo 2 ligas por deporte y por día
+Por defecto consulta SOLO Soccer y pide el historial de como mÃ¡ximo 2 ligas por deporte y por dÃ­a
 (API_SPORTS_DEPORTES y API_SPORTS_MAX_LIGAS lo ajustan).
 
-Cómo cuida la cuota (antes gastaba más de 100 requests en el primer barrido):
+CÃ³mo cuida la cuota (antes gastaba mÃ¡s de 100 requests en el primer barrido):
 - 1 pedido por deporte y fecha para listar partidos (/fixtures?date= o /games?date=), cache 8 h.
 - 1 pedido por liga (y temporada) para traer TODA la temporada y armar el historial de todos sus
   equipos, cache 6 h. Antes eran 3 pedidos por partido (h2h + forma local + forma visita).
 - Presupuesto diario persistente con reserva: si no alcanza, no pide y lo loguea.
 
 Detecta lo que la API devuelve con HTTP 200 pero con error en el cuerpo ("errors": {...}):
-límite diario agotado y "plan Free sin acceso a esta temporada". Antes ambos pasaban como
-"respuesta vacía" y el radar quedaba mudo sin avisar.
+lÃ­mite diario agotado y "plan Free sin acceso a esta temporada". Antes ambos pasaban como
+"respuesta vacÃ­a" y el radar quedaba mudo sin avisar.
 
-Football usa /fixtures (fixture/goals); el resto de los deportes usa /games (scores). Esta versión
+Football usa /fixtures (fixture/goals); el resto de los deportes usa /games (scores). Esta versiÃ³n
 entiende los dos formatos. Los formatos de basketball/handball/hockey/volleyball/rugby los
-escribí de la documentación pública, sin poder probarlos con tu clave: el primer barrido loguea
+escribÃ­ de la documentaciÃ³n pÃºblica, sin poder probarlos con tu clave: el primer barrido loguea
 cualquier forma inesperada.
 """
 
@@ -47,7 +47,31 @@ DEPORTES_ACTIVOS = [
     d.strip() for d in os.environ.get("API_SPORTS_DEPORTES", "Soccer").split(",")
     if d.strip() in _HOSTS
 ]
-MAX_LIGAS_POR_DEPORTE = int(os.environ.get("API_SPORTS_MAX_LIGAS", "2"))
+MAX_LIGAS_POR_DEPORTE = max(1, int(os.environ.get("API_SPORTS_MAX_LIGAS", "2")))
+
+
+def _leer_ligas_femeninas():
+    """IDs validados manualmente; formato: Soccer:290;Basketball:12."""
+    resultado = {}
+    raw = (os.environ.get("API_SPORTS_WOMENS_LEAGUES") or "").strip()
+    for item in raw.replace(",", ";").split(";"):
+        item = item.strip()
+        if ":" not in item:
+            continue
+        deporte, league_id = (parte.strip() for parte in item.split(":", 1))
+        if deporte in _HOSTS and league_id.isdigit():
+            resultado.setdefault(deporte, set()).add(league_id)
+    return resultado
+
+
+_LIGAS_FEMENINAS = _leer_ligas_femeninas()
+
+
+def _liga_es_femenina(deporte, liga_id, nombre_liga, nombre_local, nombre_visita):
+    identificador = str(liga_id or "")
+    if identificador and identificador in _LIGAS_FEMENINAS.get(deporte, set()):
+        return True
+    return U.es_femenino(nombre_liga, nombre_local, nombre_visita)
 
 _FINALIZADOS = {"FT", "AET", "PEN", "AOT", "AP", "FIN", "FINISHED", "AW"}
 _PROGRAMADOS = {"NS", "TBD", "SCH", "SCHEDULED"}
@@ -62,6 +86,8 @@ _cache_eventos = U.CacheTTL(8 * 3600)
 _cache_temporada = U.CacheTTL(6 * 3600)
 _deshabilitada = {"motivo": ""}
 _avisos = set()
+_bloqueadas_hasta = {}
+_reintentar_despues = {}
 
 
 def _avisar_una_vez(clave, mensaje):
@@ -75,7 +101,7 @@ def disponible():
 
 
 # ---------------------------------------------------------------------------
-# HTTP con presupuesto y detección de errores en el cuerpo
+# HTTP con presupuesto y detecciÃ³n de errores en el cuerpo
 # ---------------------------------------------------------------------------
 def _errores_del_cuerpo(data):
     err = data.get("errors") if isinstance(data, dict) else None
@@ -89,14 +115,21 @@ def _errores_del_cuerpo(data):
 
 
 def _get(deporte, ruta, params):
-    """Devuelve la lista 'response' o None si no se pudo (sin cuota, error, plan)."""
+    """Devuelve response o None; corta reintentos repetitivos por red o plan sin acceso."""
     if not disponible():
+        return None
+    tipo_pedido = "historial" if "league" in (params or {}) else "calendario"
+    clave_cooldown = (deporte, ruta, tipo_pedido)
+    ahora_monotono = time.monotonic()
+    if ahora_monotono < _bloqueadas_hasta.get(clave_cooldown, 0):
+        return None
+    if ahora_monotono < _reintentar_despues.get(clave_cooldown, 0):
         return None
     host = _HOSTS[deporte]
     if not presupuesto.puede_gastar(1):
         _avisar_una_vez(("presupuesto", presupuesto.fecha),
                         f"[api_sports] presupuesto diario agotado ({presupuesto.usadas}/{presupuesto.limite}); "
-                        "se reanuda mañana (UTC)")
+                        "se reanuda maÃ±ana (UTC)")
         return None
 
     info = {}
@@ -110,8 +143,10 @@ def _get(deporte, ruta, params):
     if data is None:
         status = info.get("status")
         if status in (401, 403):
-            _deshabilitada["motivo"] = f"HTTP {status}: clave inválida o sin permiso"
+            _deshabilitada["motivo"] = f"HTTP {status}: clave invÃ¡lida o sin permiso"
             U.log(f"[api_sports] DESACTIVADA: {_deshabilitada['motivo']}")
+        else:
+            _reintentar_despues[clave_cooldown] = time.monotonic() + 15 * 60
         return None
 
     error = _errores_del_cuerpo(data)
@@ -119,9 +154,10 @@ def _get(deporte, ruta, params):
         bajo = error.lower()
         if "request" in bajo and ("limit" in bajo or "reached" in bajo):
             presupuesto.marcar_agotado()
-            _avisar_una_vez(("limite", presupuesto.fecha), f"[api_sports] límite diario alcanzado: {error}")
-        elif "plan" in bajo or "season" in bajo or "access" in bajo:
-            _avisar_una_vez(("plan", ruta), f"[api_sports] tu plan no permite este pedido ({ruta}): {error}")
+            _avisar_una_vez(("limite", presupuesto.fecha), f"[api_sports] lÃ­mite diario alcanzado: {error}")
+        elif "plan" in bajo or "season" in bajo or "access" in bajo or "not allowed" in bajo:
+            _bloqueadas_hasta[clave_cooldown] = time.monotonic() + 24 * 3600
+            _avisar_una_vez(("plan", deporte, ruta, tipo_pedido), f"[api_sports] plan sin acceso a {deporte}{ruta} ({tipo_pedido}): {error}; no se reintentará durante 24 h")
         elif "token" in bajo or "key" in bajo or "subscription" in bajo:
             _deshabilitada["motivo"] = error
             U.log(f"[api_sports] DESACTIVADA: {error}")
@@ -134,7 +170,7 @@ def _get(deporte, ruta, params):
 
 
 # ---------------------------------------------------------------------------
-# NORMALIZACIÓN (football y deportes /games)
+# NORMALIZACIÃ“N (football y deportes /games)
 # ---------------------------------------------------------------------------
 def _num(x):
     """Marcador: entero, o dict {'total': n} (basketball), o None."""
@@ -147,7 +183,7 @@ def _num(x):
 
 
 def _normalizar_item(deporte, item):
-    """Devuelve un dict común o None si el item no tiene la forma esperada."""
+    """Devuelve un dict comÃºn o None si el item no tiene la forma esperada."""
     try:
         teams = item.get("teams") or {}
         h, a = teams.get("home") or {}, teams.get("away") or {}
@@ -193,7 +229,7 @@ def _como_partido_historico(n):
 
 
 # ---------------------------------------------------------------------------
-# PRÓXIMOS PARTIDOS
+# PRÃ“XIMOS PARTIDOS
 # ---------------------------------------------------------------------------
 def _items_del_dia(deporte, fecha):
     clave = (deporte, fecha)
@@ -203,7 +239,7 @@ def _items_del_dia(deporte, fecha):
     ruta = "/fixtures" if deporte == "Soccer" else "/games"
     resp = _get(deporte, ruta, {"date": fecha})
     if resp is None:
-        return []  # no se cachea el fallo: se reintenta en el próximo barrido
+        return []  # no se cachea el fallo: se reintenta en el prÃ³ximo barrido
     items = [n for n in (_normalizar_item(deporte, i) for i in resp) if n]
     if resp and not items:
         _avisar_una_vez(("forma", deporte),
@@ -213,7 +249,7 @@ def _items_del_dia(deporte, fecha):
 
 
 def obtener_eventos(deporte):
-    """Partidos FEMENINOS de las próximas 24 h (por nombre de liga/equipos)."""
+    """Partidos FEMENINOS de las prÃ³ximas 24 h (por nombre de liga/equipos)."""
     if deporte not in DEPORTES_ACTIVOS or not disponible():
         return []
 
@@ -228,7 +264,9 @@ def obtener_eventos(deporte):
                 continue
             if not n["ts"] or n["ts"] < ahora or n["ts"] > ahora + HORAS_VENTANA * 3600:
                 continue
-            if not U.es_femenino(n["liga_nombre"], n["nom_local"], n["nom_visita"]):
+            if not _liga_es_femenina(
+                deporte, n["liga_id"], n["liga_nombre"], n["nom_local"], n["nom_visita"]
+            ):
                 continue
             torneo = f"{n['liga_nombre']} ({n['pais']})" if n["pais"] else n["liga_nombre"]
             por_id[n["id"]] = {
@@ -265,7 +303,7 @@ def _historial_liga(deporte, liga_id, season):
         _ligas_pedidas_hoy.update(fecha=hoy, ligas=set())
     ligas_del_deporte = [k for k in _ligas_pedidas_hoy["ligas"] if k[0] == deporte]
     if clave not in _ligas_pedidas_hoy["ligas"] and len(ligas_del_deporte) >= MAX_LIGAS_POR_DEPORTE:
-        return {}  # tope de ligas distintas por deporte y por día para no gastar la cuota
+        return {}  # tope de ligas distintas por deporte y por dÃ­a para no gastar la cuota
 
     ruta = "/fixtures" if deporte == "Soccer" else "/games"
     resp = _get(deporte, ruta, {"league": liga_id, "season": season})
@@ -297,4 +335,3 @@ def historial_equipo(evento, lado):
         return []
     tid = (evento.get(lado) or {}).get("id")
     return _historial_liga(deporte, liga_id, season).get(tid, [])
-

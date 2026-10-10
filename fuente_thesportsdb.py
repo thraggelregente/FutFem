@@ -1,17 +1,31 @@
-"""
-fuente_thesportsdb.py
-Fuente TheSportsDB optimizada:
-- Consulta eventos globales del día por deporte (/eventsday.php?d=...&s=Deporte).
-- Aplica el filtro femenino unificado U.es_femenino (detecta Toppserien, Eredivisie Women, etc.).
+"""TheSportsDB V1: fixtures femeninos de ligas allowlisteadas.
+
+La API V1 pública utiliza la key 123. El endpoint global eventsday.php tiene un
+límite de respuesta muy bajo en el plan gratuito, de modo que la fuente consulta
+por ID de liga cuando se configura THESPORTSDB_WOMENS_LEAGUES. No se consultan
+cuotas, mercados ni bookmakers.
+
+Formato THESPORTSDB_WOMENS_LEAGUES:
+    Soccer:ID_LIGA,Basketball:ID_LIGA,Volleyball:ID_LIGA
+Solo agregar IDs comprobados como competiciones femeninas. Opcionalmente se puede
+activar THESPORTSDB_BUSQUEDA_GLOBAL=1; esa búsqueda es menos completa y solo deja
+pasar partidos con evidencia explícita de género femenino en la respuesta.
 """
 
+from __future__ import annotations
+
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import utilidades as U
 
-API_KEY = os.environ.get("THESPORTSDB_KEY", "3")
+API_KEY = (os.environ.get("THESPORTSDB_KEY") or "123").strip() or "123"
 BASE = f"https://www.thesportsdb.com/api/v1/json/{API_KEY}"
+FUENTE = "thesportsdb"
+CACHE_MINUTOS = max(10, int(os.environ.get("THESPORTSDB_CACHE_MINUTOS", "240")))
+BUSQUEDA_GLOBAL = os.environ.get("THESPORTSDB_BUSQUEDA_GLOBAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 _DEPORTES_TSDB = {
     "Soccer": "Soccer",
@@ -20,104 +34,178 @@ _DEPORTES_TSDB = {
     "Ice Hockey": "Ice Hockey",
     "Volleyball": "Volleyball",
     "Rugby": "Rugby",
+    "Tennis": "Tennis",
 }
 
-_cache_eventos = U.CacheTTL(30 * 60)  # 30 minutos
+
+def _leer_ligas():
+    ligas = {}
+    raw = (os.environ.get("THESPORTSDB_WOMENS_LEAGUES") or "").strip()
+    for item in re.split(r"[,;\n]+", raw):
+        item = item.strip()
+        if not item or ":" not in item:
+            continue
+        deporte, league_id = (x.strip() for x in item.split(":", 1))
+        if deporte in _DEPORTES_TSDB and league_id.isdigit():
+            ligas.setdefault(deporte, set()).add(league_id)
+    return ligas
 
 
-def _obtener_eventos_deporte_fecha(deporte_tsdb, fecha_str):
-    clave = (deporte_tsdb, fecha_str)
+_LIGAS_FEMENINAS = _leer_ligas()
+_cache_eventos = U.CacheTTL(CACHE_MINUTOS * 60)
+_avisos = set()
+_ultimo_aviso_sin_ligas = 0.0
+
+
+def disponible():
+    return bool(API_KEY) and (bool(_LIGAS_FEMENINAS) or BUSQUEDA_GLOBAL)
+
+
+def _avisar_una_vez(clave, mensaje):
+    if clave not in _avisos:
+        _avisos.add(clave)
+        U.log(mensaje)
+
+
+def _parsear_timestamp(valor):
+    if valor is None or valor == "":
+        return 0
+    if isinstance(valor, (int, float)):
+        numero = int(valor)
+        return numero if numero > 10**9 else 0
+    texto = str(valor).strip()
+    try:
+        dt = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _eventos_fecha(deporte_tsdb, fecha, league_id=None):
+    clave = (deporte_tsdb, fecha, str(league_id or "global"))
     hit, valor = _cache_eventos.get(clave)
     if hit:
         return valor
-
+    params = {"d": fecha, "s": deporte_tsdb}
+    if league_id:
+        params["l"] = str(league_id)
     url = f"{BASE}/eventsday.php"
-    params = {"d": fecha_str, "s": deporte_tsdb}
-    data = U.get_json(url, "thesportsdb", params=params, timeout=12)
+    data = U.get_json(url, FUENTE, params=params, timeout=12)
+    if not isinstance(data, dict):
+        # Los errores/transitorios se cachean también para no repetir en cada barrido.
+        _cache_eventos.set(clave, None)
+        return None
+    events = data.get("events")
+    if events is None:
+        events = []
+    if not isinstance(events, list):
+        return None
+    _cache_eventos.set(clave, events)
+    return events
 
-    eventos = []
-    if isinstance(data, dict):
-        eventos = data.get("events") or []
 
-    _cache_eventos.set(clave, eventos)
-    return eventos
-
-
-def _normalizar_evento(deporte_interno, ev):
-    torneo = ev.get("strLeague") or ""
-    nom_loc = ev.get("strHomeTeam") or "Local"
-    nom_vis = ev.get("strAwayTeam") or "Visitante"
-
-    # Filtro compartido: reconoce Toppserien, Frauen, W, Women, etc.
-    if not U.es_femenino(torneo, nom_loc, nom_vis):
+def _normalizar_evento(deporte, ev, liga_autorizada=False):
+    if not isinstance(ev, dict):
+        return None
+    liga = str(ev.get("strLeague") or "").strip()
+    local = str(ev.get("strHomeTeam") or "").strip()
+    visita = str(ev.get("strAwayTeam") or "").strip()
+    if not local or not visita:
         return None
 
-    fecha_str = ev.get("strTimestamp") or ev.get("dateEvent")
-    hora_str = ev.get("strTime") or ""
-    start_ts = 0
+    es_fem = liga_autorizada or U.es_femenino(liga, local, visita)
+    if not es_fem:
+        return None
 
-    if fecha_str:
-        try:
-            if "T" in fecha_str:
-                dt = datetime.fromisoformat(fecha_str.replace("Z", "+00:00"))
-            else:
-                dt_completo = f"{fecha_str}T{hora_str or '00:00:00'}"
-                dt = datetime.fromisoformat(dt_completo).replace(tzinfo=timezone.utc)
-            start_ts = int(dt.timestamp())
-        except Exception:
-            pass
+    raw_ts = ev.get("strTimestamp")
+    ts = _parsear_timestamp(raw_ts)
+    # No reinterpretar strTime sin zona horaria como UTC: puede ser hora local
+    # del evento y desplazarlo varias horas. Sin timestamp/offset explícito se descarta.
+    if not ts:
+        return None
 
-    estado_raw = str(ev.get("strStatus") or "").lower()
-    if estado_raw in ("", "not started", "ns", "scheduled", "time to be defined"):
-        tipo_estado = "pre"
-    elif "live" in estado_raw or "progress" in estado_raw:
-        tipo_estado = "in"
+    status = str(ev.get("strStatus") or "").strip().lower()
+    if status in {"", "not started", "ns", "scheduled", "time to be defined", "pre-game"}:
+        estado = "pre"
+    elif any(token in status for token in ("live", "progress", "half-time", "in play")):
+        estado = "in"
     else:
-        tipo_estado = "post"
+        estado = "post"
 
+    event_id = ev.get("idEvent")
+    if event_id is None:
+        return None
+    league_id = ev.get("idLeague")
+    tournament = liga or (f"TheSportsDB liga {league_id}" if league_id else "TheSportsDB")
     return {
-        "id": f"thesportsdb_{ev.get('idEvent')}",
-        "clave": U.clave_partido(nom_loc, nom_vis, start_ts),
-        "deporte": deporte_interno,
-        "torneo": torneo,
+        "id": f"thesportsdb_{event_id}",
+        "clave": U.clave_partido(local, visita, ts),
+        "deporte": deporte,
+        "torneo": tournament,
         "local": {
-            "id": str(ev.get("idHomeTeam") or nom_loc),
-            "nombre": nom_loc,
+            "id": str(ev.get("idHomeTeam") or local),
+            "nombre": local,
             "ranking": None,
             "fuera_ranking": False,
         },
         "visita": {
-            "id": str(ev.get("idAwayTeam") or nom_vis),
-            "nombre": nom_vis,
+            "id": str(ev.get("idAwayTeam") or visita),
+            "nombre": visita,
             "ranking": None,
             "fuera_ranking": False,
         },
-        "horario": U.formatear_hora_arg(start_ts) if start_ts else "A confirmar",
-        "tipo_estado": tipo_estado,
-        "startTimestamp": start_ts,
-        "fuente": "thesportsdb",
+        "horario": U.formatear_hora_arg(ts),
+        "tipo_estado": estado,
+        "startTimestamp": ts,
+        "fuente": FUENTE,
         "femenino_seguro": True,
+        "liga_ref": (str(league_id or ""),),
     }
 
 
 def obtener_eventos(deporte_interno):
     deporte_tsdb = _DEPORTES_TSDB.get(deporte_interno)
-    if not deporte_tsdb:
+    if not deporte_tsdb or not disponible():
         return []
 
-    hoy = datetime.now(timezone.utc)
-    fechas = [hoy.strftime("%Y-%m-%d"), (hoy + timedelta(days=1)).strftime("%Y-%m-%d")]
+    ahora = datetime.now(timezone.utc)
+    fechas = [ahora.strftime("%Y-%m-%d"), (ahora + timedelta(days=1)).strftime("%Y-%m-%d")]
+    liga_ids = sorted(_LIGAS_FEMENINAS.get(deporte_interno, set()))
+    consultas = [(fecha, league_id, True) for league_id in liga_ids for fecha in fechas]
+    if BUSQUEDA_GLOBAL:
+        consultas.extend((fecha, None, False) for fecha in fechas)
 
-    eventos_encontrados = []
-    for f in fechas:
-        partidos = _obtener_eventos_deporte_fecha(deporte_tsdb, f)
-        for ev in partidos:
-            norm = _normalizar_evento(deporte_interno, ev)
-            if norm and norm["tipo_estado"] == "pre":
-                eventos_encontrados.append(norm)
+    by_id = {}
+    for fecha, league_id, autorizada in consultas:
+        events = _eventos_fecha(deporte_tsdb, fecha, league_id)
+        if events is None:
+            continue
+        for raw in events:
+            # Si se llamó /eventsday con l=ID, solo se confía en ese ID exacto.
+            event_league_id = str((raw or {}).get("idLeague") or "")
+            whitelist = autorizada and (not event_league_id or event_league_id == str(league_id))
+            normalized = _normalizar_evento(deporte_interno, raw, liga_autorizada=whitelist)
+            if not normalized or normalized["tipo_estado"] != "pre":
+                continue
+            ts = normalized["startTimestamp"]
+            now = ahora.timestamp()
+            if ts <= now or ts > now + 36 * 3600:
+                continue
+            by_id[normalized["id"]] = normalized
+        # Respeta holgadamente el límite documentado de 30 peticiones/minuto.
+        if len(consultas) > 12:
+            time.sleep(0.08)
 
-    if eventos_encontrados:
-        U.log(f"[thesportsdb/{deporte_interno}] {len(eventos_encontrados)} partidos femeninos capturados")
-
-    unicos = {e["id"]: e for e in eventos_encontrados}
-    return list(unicos.values())
+    if by_id:
+        U.log(f"[thesportsdb/{deporte_interno}] {len(by_id)} partidos femeninos capturados")
+    elif not _LIGAS_FEMENINAS and not BUSQUEDA_GLOBAL:
+        global _ultimo_aviso_sin_ligas
+        if time.time() - _ultimo_aviso_sin_ligas > 6 * 3600:
+            _ultimo_aviso_sin_ligas = time.time()
+            U.log(
+                "[thesportsdb] sin consumo de API: configurá THESPORTSDB_WOMENS_LEAGUES con IDs "
+                "verificados (por ejemplo Soccer:ID). El listado global gratuito tiene cobertura limitada."
+            )
+    return list(by_id.values())

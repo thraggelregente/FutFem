@@ -1,7 +1,7 @@
 """
 fuente_espn.py
-ESPN (API pública, sin clave y sin cuota diaria): fuente principal del radar.
-Ligas femeninas verificadas en producción.
+ESPN (API pública, sin clave): fuente de respaldo y ranking WTA; no es proveedor principal.
+Ligas femeninas verificadas en producciÃ³n.
 """
 
 import os
@@ -21,9 +21,9 @@ LIGAS = {
     "Soccer": {
         "eng.w.1": "Women's Super League (Inglaterra)",
         "usa.nwsl": "NWSL (EE.UU.)",
-        "esp.w.1": "Liga F (España)",
-        "fra.w.1": "Première Ligue (Francia)",
-        "ned.w.1": "Vrouwen Eredivisie (Países Bajos)",
+        "esp.w.1": "Liga F (EspaÃ±a)",
+        "fra.w.1": "PremiÃ¨re Ligue (Francia)",
+        "ned.w.1": "Vrouwen Eredivisie (PaÃ­ses Bajos)",
         "aus.w.1": "A-League Women (Australia)",
         "uefa.wchampions": "UEFA Women's Champions League",
     },
@@ -45,7 +45,7 @@ _SPORT_A_INTERNO = {v: k for k, v in _DEPORTE_ESPN.items()}
 _RE_SLUG_FEM = re.compile(r"(\.w\.|nwsl|wchampions|\.wwc|shebelieves|womens|wnba|wta)", re.I)
 _ESTADOS_NO_JUGADOS = ("POSTPONED", "CANCELED", "CANCELLED", "SUSPENDED", "ABANDONED", "DELAYED", "FORFEIT")
 
-_cache_proximos = U.CacheTTL(20 * 60)
+_cache_proximos = U.CacheTTL(max(10, int(os.environ.get("ESPN_SCOREBOARD_CACHE_MINUTES", "180"))) * 60)
 _cache_dia_pasado = U.CacheTTL(24 * 3600)
 _cache_historial = U.CacheTTL(6 * 3600)
 _cache_ranking = U.CacheTTL(12 * 3600)
@@ -279,7 +279,7 @@ def _eventos_pasados(sport, slug):
         eventos = (data or {}).get("events") or []
         if eventos:
             return eventos
-    U.log(f"[espn] {slug}: el rango de fechas no devolvió datos; pido día por día ({DIAS_HISTORIAL} pedidos)")
+    U.log(f"[espn] {slug}: el rango de fechas no devolviÃ³ datos; pido dÃ­a por dÃ­a ({DIAS_HISTORIAL} pedidos)")
     todos = []
     for d in range(1, DIAS_HISTORIAL + 1):
         data = _scoreboard(sport, slug, _fecha_utc(-d), _cache_dia_pasado)

@@ -2,11 +2,11 @@
 utilidades.py
 Funciones compartidas por todo el radar:
 - Hora de Argentina (zona horaria real, no la del servidor).
-- Logging y estadísticas por fuente (cuántas respuestas 200 / 403 / errores).
+- Logging y estadÃ­sticas por fuente (cuÃ¡ntas respuestas 200 / 403 / errores).
 - HTTP con manejo de errores visible (nada falla en silencio), con soporte de proxy.
 - Cache con vencimiento.
 - Persistencia de partidos ya vistos (Upstash Redis o archivo en DATA_DIR).
-- Normalización y comparación de nombres de equipos / jugadoras.
+- NormalizaciÃ³n y comparaciÃ³n de nombres de equipos / jugadoras.
 """
 
 import json
@@ -67,7 +67,7 @@ if curl_requests is None:
 
 
 # ---------------------------------------------------------------------------
-# HTTP + ESTADÍSTICAS POR FUENTE
+# HTTP + ESTADÃSTICAS POR FUENTE
 # ---------------------------------------------------------------------------
 HEADERS_NAVEGADOR = {
     "User-Agent": (
@@ -120,7 +120,7 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
             clave = (fuente, type(e_curl).__name__)
             if clave not in _avisos_curl:
                 _avisos_curl.add(clave)
-                log(f"[{fuente}] curl_cffi falló ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
+                log(f"[{fuente}] curl_cffi fallÃ³ ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
     try:
         return requests.get(url, headers=base, params=params, timeout=timeout, proxies=proxies)
     except requests.RequestException as e:
@@ -196,8 +196,9 @@ class CacheTTL:
 # PERSISTENCIA (Upstash Redis o archivo en DATA_DIR)
 # ---------------------------------------------------------------------------
 DATA_DIR = os.environ.get("DATA_DIR", ".")
-UPSTASH_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
-UPSTASH_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+UPSTASH_URL = (os.environ.get("UPSTASH_REDIS_REST_URL") or "").strip()
+UPSTASH_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN") or "").strip()
+_UPSTASH_ULTIMO_OK = None  # None = todavía no se probó en este proceso
 
 
 def usa_upstash():
@@ -205,7 +206,11 @@ def usa_upstash():
 
 
 def persistencia_es_duradera():
-    return usa_upstash() or ("DATA_DIR" in os.environ)
+    # No anunciar persistencia remota sana si ya falló una operación de Upstash.
+    # El primer GET de RegistroVistos sucede al importar main, antes del aviso de inicio.
+    if usa_upstash():
+        return _UPSTASH_ULTIMO_OK is not False
+    return "DATA_DIR" in os.environ
 
 
 def modo_persistencia():
@@ -217,14 +222,21 @@ def modo_persistencia():
 
 
 def _upstash(comando):
-    r = requests.post(
-        UPSTASH_URL,
-        headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
-        json=comando,
-        timeout=8,
-    )
-    r.raise_for_status()
-    return r.json().get("result")
+    global _UPSTASH_ULTIMO_OK
+    try:
+        r = requests.post(
+            UPSTASH_URL,
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            json=comando,
+            timeout=8,
+        )
+        r.raise_for_status()
+        resultado = r.json().get("result")
+        _UPSTASH_ULTIMO_OK = True
+        return resultado
+    except Exception:
+        _UPSTASH_ULTIMO_OK = False
+        raise
 
 
 def cargar_json(nombre, defecto):
@@ -233,7 +245,7 @@ def cargar_json(nombre, defecto):
             res = _upstash(["GET", f"radar:{nombre}"])
             return json.loads(res) if res else defecto
         except Exception as e:
-            log(f"[persistencia] Upstash GET falló ({type(e).__name__}); uso archivo")
+            log(f"[persistencia] Upstash GET fallÃ³ ({type(e).__name__}); uso archivo")
     ruta = os.path.join(DATA_DIR, nombre)
     if os.path.exists(ruta):
         try:
@@ -251,7 +263,7 @@ def guardar_json(nombre, datos):
             _upstash(["SET", f"radar:{nombre}", texto])
             return True
         except Exception as e:
-            log(f"[persistencia] Upstash SET falló ({type(e).__name__}); uso archivo")
+            log(f"[persistencia] Upstash SET fallÃ³ ({type(e).__name__}); uso archivo")
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         ruta = os.path.join(DATA_DIR, nombre)
@@ -317,12 +329,12 @@ class RegistroVistos:
 
 
 # ---------------------------------------------------------------------------
-# PRESUPUESTO DIARIO DE REQUESTS (APIs con cuota, p. ej. API-Sports 100/día)
+# PRESUPUESTO DIARIO DE REQUESTS (APIs con cuota, p. ej. API-Sports 100/dÃ­a)
 # ---------------------------------------------------------------------------
 class PresupuestoDiario:
     """
-    Cuenta los requests gastados en el día (UTC, igual que el reinicio de API-Sports) y
-    los persiste, así un reinicio/deploy no "olvida" lo gastado. Nunca deja gastar la reserva.
+    Cuenta los requests gastados en el dÃ­a (UTC, igual que el reinicio de API-Sports) y
+    los persiste, asÃ­ un reinicio/deploy no "olvida" lo gastado. Nunca deja gastar la reserva.
     """
 
     def __init__(self, nombre, limite, reserva=8):
@@ -358,7 +370,7 @@ class PresupuestoDiario:
         return self.restantes() >= n
 
     def registrar(self, n=1, restantes_reales=None):
-        """Suma n requests. Si la API informó cuántos le quedan, se corrige con ese dato."""
+        """Suma n requests. Si la API informÃ³ cuÃ¡ntos le quedan, se corrige con ese dato."""
         self._rotar()
         self.usadas += n
         if restantes_reales is not None:
@@ -407,7 +419,7 @@ def nombres_coinciden(a, b):
 # FILTRO FEMENINO COMPARTIDO (todas las fuentes usan el mismo)
 # ---------------------------------------------------------------------------
 # Evidencia POSITIVA de torneo/equipo femenino. El texto se normaliza antes (sin tildes ni signos),
-# así "Division 1 Féminine", "Frauen-Bundesliga" o "Liga MX Femenil" quedan cubiertos.
+# asÃ­ "Division 1 FÃ©minine", "Frauen-Bundesliga" o "Liga MX Femenil" quedan cubiertos.
 _RE_FEM = re.compile(
     r"\b(women|womens|woman|wom|female|femenino|femenina|femenil|femeni|feminino|feminina|"
     r"feminin|feminine|femminile|fem|frauen|damen|dames|ladies|vrouwen|kvinde\w*|kvinnor|"
@@ -465,7 +477,7 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
             if partidos:
                 return partidos
         except Exception as e:
-            log(f"[historial] {fuente} falló para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] {fuente} fallÃ³ para {evento.get('id')}: {type(e).__name__}")
 
     if fuente != "highlightly" and fuente_highlightly and fuente_highlightly.disponible():
         try:
@@ -477,7 +489,7 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
                 if partidos:
                     return partidos
         except Exception as e:
-            log(f"[historial] Highlightly falló para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] Highlightly fallÃ³ para {evento.get('id')}: {type(e).__name__}")
 
     return []
 
@@ -485,8 +497,8 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
 def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita):
     """
     H2H entre local y visita en formato interno, o []. Orden:
-    1) los cruces que ya están en el historial del local;
-    2) Highlightly (por ids propios si el evento viene de ahí, si no por nombre; ids reescritos al evento);
+    1) los cruces que ya estÃ¡n en el historial del local;
+    2) Highlightly (por ids propios si el evento viene de ahÃ­, si no por nombre; ids reescritos al evento);
     3) OddsPapi (solo eventos de OddsPapi y con ODDSPAPI_PROFUNDIDAD=1).
     """
     h2h_local = [p for p in hist_local if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
@@ -504,7 +516,7 @@ def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuent
             if h2h:
                 return h2h
         except Exception as e:
-            log(f"[h2h] Highlightly falló: {type(e).__name__}")
+            log(f"[h2h] Highlightly fallÃ³: {type(e).__name__}")
 
     if fuente_oddspapi and fuente_oddspapi.disponible():
         try:
@@ -512,7 +524,7 @@ def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuent
             if h2h:
                 return h2h
         except Exception as e:
-            log(f"[h2h] OddsPapi falló: {type(e).__name__}")
+            log(f"[h2h] OddsPapi fallÃ³: {type(e).__name__}")
 
     return []
 
@@ -531,9 +543,8 @@ def tabla_desde_fuentes(evento, fuente_highlightly):
             loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"), ids_hl=ids_hl
         )
     except Exception as e:
-        log(f"[tabla] Highlightly falló: {type(e).__name__}")
+        log(f"[tabla] Highlightly fallÃ³: {type(e).__name__}")
         return None, 0
     if not res:
         return None, 0
     return {loc["id"]: res["local"], vis["id"]: res["visita"]}, res.get("n_equipos", 0)
-

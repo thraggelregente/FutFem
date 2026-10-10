@@ -1,8 +1,8 @@
 """
 metricas_profundas.py
-Métricas de apoyo (solo se consultan para eventos que ya son mismatch):
+MÃ©tricas de apoyo (solo se consultan para eventos que ya son mismatch):
 - Tennis Abstract / Sackmann: win rate de la FAVORITA en la superficie del partido.
-- ScoreBing: presión ofensiva (córners) de la favorita en fútbol.
+- ScoreBing: presiÃ³n ofensiva (cÃ³rners) de la favorita en fÃºtbol.
 """
 
 import csv
@@ -73,7 +73,7 @@ def _es_la_jugadora(nombre_csv_norm, apellido_tokens, inicial):
 
 def consultar_perfil_tenis_abstract(nombre_jugadora, superficie="Hard"):
     """
-    Win rate de la jugadora en la superficie indicada (año actual + anterior, circuito
+    Win rate de la jugadora en la superficie indicada (aÃ±o actual + anterior, circuito
     WTA + ITF). Si la superficie no se conoce no marca vulnerabilidad.
     """
     superficie = normalizar_superficie(superficie)
@@ -109,9 +109,9 @@ def consultar_perfil_tenis_abstract(nombre_jugadora, superficie="Hard"):
     return resultado
 
 
-# ---------- 2. FÚTBOL: PRESIÓN OFENSIVA (SCOREBING) ----------
+# ---------- 2. FÃšTBOL: PRESIÃ“N OFENSIVA (SCOREBING) ----------
 def obtener_presion_ofensiva_futbol(nombre_equipo):
-    """Promedio de córners a favor / en contra. Endpoint no oficial: si falla, devuelve ceros."""
+    """Promedio de cÃ³rners a favor / en contra. Endpoint no oficial: si falla, devuelve ceros."""
     metricas = {"prom_corners_favor": 0.0, "prom_corners_contra": 0.0, "alta_presion": False}
     if not nombre_equipo:
         return metricas
@@ -139,7 +139,7 @@ def obtener_presion_ofensiva_futbol(nombre_equipo):
         metricas.update({
             "prom_corners_favor": round(favor, 1),
             "prom_corners_contra": round(contra, 1),
-            # Alta presión: genera >= 6.5 córners y concede <= 2.5
+            # Alta presiÃ³n: genera >= 6.5 cÃ³rners y concede <= 2.5
             "alta_presion": favor >= 6.5 and contra <= 2.5,
         })
         _cache_presion.set(nombre_equipo, metricas)
