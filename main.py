@@ -3,9 +3,9 @@ main.py
 Radar Mismatch Multideporte Femenino 360°
 
 Flujo:
-  1. ESPN (principal) + API-Sports (opcional) dan eventos femeninos de las próximas 24h.
-  2. Para cada evento, se obtiene el historial del equipo y H2H probando varias fuentes:
-     ESPN -> API-Sports -> Highlightly -> OddsPapi.
+  1. ESPN (principal), API-Sports, Highlightly y OddsPapi dan eventos femeninos de las próximas 24h.
+  2. Para cada evento se obtiene el historial de los equipos, el H2H y la tabla de posiciones probando
+     varias fuentes (la del propio evento primero y Highlightly / OddsPapi como respaldo).
   3. El motor de señales evalúa y, si hay mismatch, avisa por Telegram.
 """
 
@@ -108,14 +108,6 @@ fuente_espn = _importar("fuente_espn")
 fuente_api_football = _importar("fuente_api_football")
 fuente_highlightly = _importar("fuente_highlightly")
 fuente_oddspapi = _importar("fuente_oddspapi")
-tracker_cuotas_smart = _importar("tracker_cuotas_smart")
-
-# Monitor de noticias: desactivado por defecto (Nitter está muerto)
-if os.environ.get("ACTIVAR_MONITOR_NOTICIAS") == "1":
-    monitor_noticias = _importar("monitor_noticias")
-else:
-    monitor_noticias = None
-    U.log("Monitor de noticias DESACTIVADO (Nitter caído). Activar con ACTIVAR_MONITOR_NOTICIAS=1")
 
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
@@ -130,31 +122,10 @@ _ultimo_aviso_ciego = 0.0
 # ---------------------------------------------------------------------------
 # ALERTA
 # ---------------------------------------------------------------------------
-def _seguro(funcion, *args, defecto=None, **kwargs):
-    try:
-        return funcion(*args, **kwargs)
-    except Exception as e:
-        U.log(f"Aviso: falló {getattr(funcion, '__name__', '?')}: {type(e).__name__}: {e}")
-        return defecto
-
-
-def enriquecer_y_enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, estado,
-                               alertas_base, pick_base, favorito, confianza="Media"):
+def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, estado,
+                  alertas_base, pick_base, favorito, confianza="Media"):
     nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
     detalles = list(alertas_base)
-
-    if monitor_noticias:
-        nov = _seguro(monitor_noticias.buscar_novedades_partido, nom_loc, nom_vis, defecto={}) or {}
-        if nov.get("alerta_novedad"):
-            etiqueta = "⚠️ Último momento (afecta al favorito)" if nov.get("equipo") == favorito else "Último momento (rival)"
-            detalles.append(f"{etiqueta}: {nov['fragmento']}")
-
-    estado_mercado = "Línea abierta en bookies locales"
-    if tracker_cuotas_smart:
-        odds = _seguro(tracker_cuotas_smart.analizar_mercado_evento,
-                       nom_loc, nom_vis, favorito, deporte, defecto={}) or {}
-        if odds.get("disponible"):
-            estado_mercado = odds.get("resumen", estado_mercado)
 
     esc = html.escape
     detalles_txt = "\n".join(f"• {esc(str(d))}" for d in detalles)
@@ -168,7 +139,6 @@ def enriquecer_y_enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, esta
         f"🕒 <b>Horario:</b> {esc(hora_txt)}\n\n"
         f"📊 <b>La clave del mismatch:</b>\n{detalles_txt}\n\n"
         f"🎯 <b>Mercado sugerido:</b> {esc(pick_base)}\n"
-        f"📈 <b>Estado del mercado:</b> {esc(estado_mercado)}\n"
         f"🔥 <b>Confianza:</b> {esc(confianza)}"
     )
     enviado = enviar_telegram(mensaje)
@@ -219,7 +189,7 @@ def _procesar_evento(ev, st, ahora_ts):
         )
         if hay and pts >= 2:
             nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
-            enriquecer_y_enviar_alerta(
+            enviar_alerta(
                 deporte, ev["torneo"], nom_loc, nom_vis, ev["horario"], estado, [detalle],
                 motor_mismatches.sugerir_mercado("Tennis", favorito, nom_fav),
                 favorito, "Alta" if pts >= 3 else "Media",
@@ -246,20 +216,29 @@ def _procesar_evento(ev, st, ahora_ts):
     h2h_raw = U.h2h_desde_fuentes(ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis)
     h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
 
-    res = motor_mismatches.evaluar_mismatch(
-        deporte=deporte, perf_local=perf_loc, perf_visita=perf_vis,
-        triangulaciones=triangs, h2h=h2h, tabla_local_visita=None,
-        datos_extra={
-            "descanso": motor_mismatches.evaluar_descanso(forma_loc, id_loc, forma_vis, id_vis),
-            "racha_local": motor_mismatches.evaluar_momentum(forma_loc, id_loc),
-            "racha_visita": motor_mismatches.evaluar_momentum(forma_vis, id_vis),
-        },
-    )
+    datos_extra = {
+        "descanso": motor_mismatches.evaluar_descanso(forma_loc, id_loc, forma_vis, id_vis),
+        "racha_local": motor_mismatches.evaluar_momentum(forma_loc, id_loc),
+        "racha_visita": motor_mismatches.evaluar_momentum(forma_vis, id_vis),
+    }
+
+    def _evaluar(tabla_eval):
+        return motor_mismatches.evaluar_mismatch(
+            deporte=deporte, perf_local=perf_loc, perf_visita=perf_vis,
+            triangulaciones=triangs, h2h=h2h, tabla_local_visita=tabla_eval, datos_extra=datos_extra,
+        )
+
+    res = _evaluar(None)
+    # La tabla suma 2 puntos: solo se pide (gasta cuota) si puede cambiar el resultado.
+    if not res["hay_mismatch"] and res["puntaje"] >= 2 and res["puntaje_contrario"] <= 1:
+        tabla, n_equipos = U.tabla_desde_fuentes(ev, fuente_highlightly)
+        if tabla:
+            res = _evaluar(motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis, n_equipos=n_equipos))
 
     if res["hay_mismatch"]:
         favorito = res["favorito"]
         nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
-        enriquecer_y_enviar_alerta(
+        enviar_alerta(
             deporte, ev["torneo"], nom_loc, nom_vis, ev["horario"], estado, res["alertas"],
             motor_mismatches.sugerir_mercado(deporte, favorito, nom_fav),
             favorito, res["confianza"],
@@ -277,11 +256,12 @@ def _procesar_evento(ev, st, ahora_ts):
 # ---------------------------------------------------------------------------
 def _recolectar_eventos(resumen):
     por_clave = {}
-    fuentes = [(fuente_espn, "espn"), (fuente_api_football, "api_sports")]
+    fuentes = [(fuente_espn, "espn"), (fuente_api_football, "api_sports"),
+               (fuente_highlightly, "highlightly"), (fuente_oddspapi, "oddspapi")]
     for modulo, nombre in fuentes:
         if modulo is None:
             continue
-        # Comprobar si está disponible (API-Sports puede estar deshabilitada)
+        # Comprobar si está disponible (sin clave, deshabilitada, etc.)
         if hasattr(modulo, "disponible") and not modulo.disponible():
             continue
         for deporte in DEPORTES_RADAR:
@@ -395,3 +375,4 @@ if __name__ == "__main__":
         except Exception as e:
             U.log(f"Error en ciclo de barrido: {type(e).__name__}: {e}")
         time.sleep(INTERVALO_REVISION)
+

@@ -444,44 +444,35 @@ def clave_partido(local, visita, start_ts):
 
     dia = ts_a_arg(start_ts).strftime("%Y%m%d") if start_ts else "sinfecha"
     return f"{firma(local)}|{firma(visita)}|{dia}"
+
+
 # ---------------------------------------------------------------------------
-# HISTORIAL UNIFICADO (prueba varias fuentes en orden)
+# HISTORIAL, H2H Y TABLA UNIFICADOS (prueban varias fuentes en orden)
 # ---------------------------------------------------------------------------
 def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football):
     """
-    Intenta obtener el historial de un equipo desde varias fuentes, en orden de prioridad:
-    1. ESPN (historial de su propia liga)
-    2. API-Sports (si está activo)
-    3. Highlightly (por nombre de equipo)
-    
-    `lado` es "local" o "visita".
-    Devuelve lista de partidos en formato interno o [].
+    Historial de un equipo (`lado` = "local" o "visita") en formato interno, o [].
+    Orden: 1) la fuente de la que vino el evento (ESPN, API-Sports, Highlightly u OddsPapi);
+    2) Highlightly buscando el equipo por nombre (los ids se reescriben a los del evento).
     """
-    # 1. ESPN
-    if fuente_espn and evento.get("fuente") == "espn":
+    fuente = evento.get("fuente")
+    propias = {"espn": fuente_espn, "api_sports": fuente_api_football,
+               "highlightly": fuente_highlightly, "oddspapi": fuente_oddspapi}
+    modulo = propias.get(fuente)
+    if modulo is not None and hasattr(modulo, "historial_equipo"):
         try:
-            partidos = fuente_espn.historial_equipo(evento, lado)
+            partidos = modulo.historial_equipo(evento, lado)
             if partidos:
                 return partidos
         except Exception as e:
-            log(f"[historial] ESPN falló para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] {fuente} falló para {evento.get('id')}: {type(e).__name__}")
 
-    # 2. API-Sports (solo si el evento viene de API-Sports)
-    if fuente_api_football and evento.get("fuente") == "api_sports":
+    if fuente != "highlightly" and fuente_highlightly and fuente_highlightly.disponible():
         try:
-            partidos = fuente_api_football.historial_equipo(evento, lado)
-            if partidos:
-                return partidos
-        except Exception as e:
-            log(f"[historial] API-Sports falló para {evento.get('id')}: {type(e).__name__}")
-
-    # 3. Highlightly por nombre de equipo
-    if fuente_highlightly and fuente_highlightly.disponible():
-        try:
-            nombre_equipo = (evento.get(lado) or {}).get("nombre")
-            if nombre_equipo:
+            equipo = evento.get(lado) or {}
+            if equipo.get("nombre"):
                 partidos = fuente_highlightly.obtener_forma_reciente(
-                    nombre_equipo, evento.get("deporte", "Soccer"), limite=6
+                    equipo["nombre"], evento.get("deporte", "Soccer"), limite=6, id_interno=equipo.get("id")
                 )
                 if partidos:
                     return partidos
@@ -493,36 +484,56 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
 
 def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita):
     """
-    Intenta obtener el H2H desde varias fuentes:
-    1. ESPN (ya está en hist_local: filtramos los partidos contra el rival)
-    2. Highlightly
-    3. OddsPapi
+    H2H entre local y visita en formato interno, o []. Orden:
+    1) los cruces que ya están en el historial del local;
+    2) Highlightly (por ids propios si el evento viene de ahí, si no por nombre; ids reescritos al evento);
+    3) OddsPapi (solo eventos de OddsPapi y con ODDSPAPI_PROFUNDIDAD=1).
     """
-    # 1. Del historial local de ESPN (ya está descargado, filtramos)
     h2h_local = [p for p in hist_local if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
     if h2h_local:
         return h2h_local
 
-    # 2. Highlightly
     if fuente_highlightly and fuente_highlightly.disponible():
         try:
-            nombre_loc = evento["local"]["nombre"]
-            nombre_vis = evento["visita"]["nombre"]
-            h2h = fuente_highlightly.obtener_h2h(nombre_loc, nombre_vis, evento.get("deporte", "Soccer"))
+            loc, vis = evento["local"], evento["visita"]
+            ids_hl = (loc["id"], vis["id"]) if evento.get("fuente") == "highlightly" else None
+            h2h = fuente_highlightly.obtener_h2h(
+                loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"),
+                id_local=loc["id"], id_visita=vis["id"], ids_hl=ids_hl,
+            )
             if h2h:
                 return h2h
         except Exception as e:
             log(f"[h2h] Highlightly falló: {type(e).__name__}")
 
-    # 3. OddsPapi
     if fuente_oddspapi and fuente_oddspapi.disponible():
         try:
-            nombre_loc = evento["local"]["nombre"]
-            nombre_vis = evento["visita"]["nombre"]
-            h2h = fuente_oddspapi.obtener_h2h(nombre_loc, nombre_vis, evento.get("deporte", "Soccer"))
+            h2h = fuente_oddspapi.obtener_h2h(evento)
             if h2h:
                 return h2h
         except Exception as e:
             log(f"[h2h] OddsPapi falló: {type(e).__name__}")
 
     return []
+
+
+def tabla_desde_fuentes(evento, fuente_highlightly):
+    """
+    Tabla de posiciones de la liga del partido: devuelve ({id_local: fila, id_visita: fila}, n_equipos)
+    con los ids del EVENTO, o (None, 0). Solo Highlightly tiene tablas (OddsPapi no tiene ese endpoint).
+    """
+    if not (fuente_highlightly and fuente_highlightly.disponible()):
+        return None, 0
+    try:
+        loc, vis = evento["local"], evento["visita"]
+        ids_hl = (loc["id"], vis["id"]) if evento.get("fuente") == "highlightly" else None
+        res = fuente_highlightly.obtener_tabla_partido(
+            loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"), ids_hl=ids_hl
+        )
+    except Exception as e:
+        log(f"[tabla] Highlightly falló: {type(e).__name__}")
+        return None, 0
+    if not res:
+        return None, 0
+    return {loc["id"]: res["local"], vis["id"]: res["visita"]}, res.get("n_equipos", 0)
+

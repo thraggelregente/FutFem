@@ -26,18 +26,27 @@ services:
       # Fuentes
       - key: API_FOOTBALL_KEY
         sync: false
-      - key: ODDS_API_KEY
-        sync: false
       - key: HIGHLIGHTLY_API_KEY
         sync: false
       - key: ODDSPAPI_API_KEY
         sync: false
       # Límites (ajustables sin tocar código)
       - key: API_SPORTS_DEPORTES
-        value: "Soccer"      # Solo Soccer por ahora (ahorra cuota)
+        value: "Soccer"      # Solo Soccer (ahorra cuota)
       - key: API_SPORTS_MAX_LIGAS
-        value: "2"           # Máximo 2 ligas por deporte
+        value: "2"           # Máximo 2 ligas por deporte y por día
+      - key: HIGHLIGHTLY_DEPORTES
+        value: "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
+      - key: HIGHLIGHTLY_DAILY_LIMIT
+        value: "100"         # Se corrige solo con los headers x-ratelimit de la API
+      - key: HIGHLIGHTLY_MAX_PAGINAS
+        value: "3"           # Páginas de 100 partidos por deporte y fecha
+      - key: ODDSPAPI_DEPORTES
+        value: "Soccer,Volleyball,Handball,Basketball,Ice Hockey"
+      - key: ODDSPAPI_DAILY_LIMIT
+        value: "8"           # El plan Free da ~250 requests por mes
+      - key: ODDSPAPI_PROFUNDIDAD
+        value: "0"           # 1 = forma y H2H desde OddsPapi (gasta cuota)
       - key: MAX_ANALISIS_POR_CICLO
         value: "100"
-      - key: ACTIVAR_MONITOR_NOTICIAS
-        value: "0"           # Nitter está muerto; activar con 1 si algún día funciona
+

@@ -4,6 +4,9 @@ API-Sports (https://www.api-sports.io/): fuente SECUNDARIA, con cuota (Free = 10
 COMPARTIDOS entre todos los deportes). ESPN es la principal; esta suma deportes y ligas que ESPN
 no cubre (handball, vóley, rugby, más fútbol).
 
+Por defecto consulta SOLO Soccer y pide el historial de como máximo 2 ligas por deporte y por día
+(API_SPORTS_DEPORTES y API_SPORTS_MAX_LIGAS lo ajustan).
+
 Cómo cuida la cuota (antes gastaba más de 100 requests en el primer barrido):
 - 1 pedido por deporte y fecha para listar partidos (/fixtures?date= o /games?date=), cache 8 h.
 - 1 pedido por liga (y temporada) para traer TODA la temporada y armar el historial de todos sus
@@ -41,10 +44,10 @@ _HOSTS = {
 
 # Deportes a consultar (cada uno cuesta ~2 requests por refresco de 8 h). Configurable.
 DEPORTES_ACTIVOS = [
-    d.strip() for d in os.environ.get("API_SPORTS_DEPORTES", "Soccer,Basketball,Handball,Volleyball").split(",")
+    d.strip() for d in os.environ.get("API_SPORTS_DEPORTES", "Soccer").split(",")
     if d.strip() in _HOSTS
 ]
-MAX_LIGAS_HISTORIAL = int(os.environ.get("API_SPORTS_MAX_LIGAS", "6"))
+MAX_LIGAS_POR_DEPORTE = int(os.environ.get("API_SPORTS_MAX_LIGAS", "2"))
 
 _FINALIZADOS = {"FT", "AET", "PEN", "AOT", "AP", "FIN", "FINISHED", "AW"}
 _PROGRAMADOS = {"NS", "TBD", "SCH", "SCHEDULED"}
@@ -260,8 +263,9 @@ def _historial_liga(deporte, liga_id, season):
     hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if _ligas_pedidas_hoy["fecha"] != hoy:
         _ligas_pedidas_hoy.update(fecha=hoy, ligas=set())
-    if clave not in _ligas_pedidas_hoy["ligas"] and len(_ligas_pedidas_hoy["ligas"]) >= MAX_LIGAS_HISTORIAL:
-        return {}  # tope de ligas distintas por día para no gastar la cuota en ligas menores
+    ligas_del_deporte = [k for k in _ligas_pedidas_hoy["ligas"] if k[0] == deporte]
+    if clave not in _ligas_pedidas_hoy["ligas"] and len(ligas_del_deporte) >= MAX_LIGAS_POR_DEPORTE:
+        return {}  # tope de ligas distintas por deporte y por día para no gastar la cuota
 
     ruta = "/fixtures" if deporte == "Soccer" else "/games"
     resp = _get(deporte, ruta, {"league": liga_id, "season": season})
@@ -293,3 +297,4 @@ def historial_equipo(evento, lado):
         return []
     tid = (evento.get(lado) or {}).get("id")
     return _historial_liga(deporte, liga_id, season).get(tid, [])
+

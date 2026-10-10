@@ -3,7 +3,7 @@ motor_mismatches.py
 Cerebro cuantitativo del Radar Femenino (simétrico: el favorito puede ser local o visitante).
 
 Señales que SUMAN puntos al lado al que favorecen:
-  1. Tabla de la temporada (efectividad + brecha)        -> 2 pts   (solo si hay tabla; hoy no se alimenta)
+  1. Tabla de la temporada (efectividad + brecha)        -> 2 pts   (solo si hay tabla; la da Highlightly)
   2. Contraste de forma reciente                         -> 2-3 pts
   3. Triangulación de rivales en común                   -> 1-3 pts
   4. H2H extendido (hasta 36 meses)                      -> 0.5-2 pts
@@ -11,8 +11,7 @@ Señales que SUMAN puntos al lado al que favorecen:
   6. Descanso (el rival jugó hace <=3 días)              -> 0-1 pt
   8. Momentum (racha de victorias) -> solo si la forma no sumó ya para ese lado
 
-Las señales 7 (bajas/lesiones) y 9 (clima) NO están implementadas como señal numérica:
-las bajas llegan como texto desde monitor_noticias y solo se muestran en la alerta.
+Las señales 7 (bajas/lesiones) y 9 (clima) NO están implementadas.
 
 Ojo: las señales 2, 3, 6 y 8 salen de los MISMOS últimos partidos, así que no son independientes;
 por eso el momentum no suma si la forma ya sumó.
@@ -95,10 +94,11 @@ def _evaluar_tabla_lado(tabla, id_fav, id_rival, n_equipos):
     return None
 
 
-def evaluar_tabla_posiciones(tabla_data, id_local, id_visita):
+def evaluar_tabla_posiciones(tabla_data, id_local, id_visita, n_equipos=None):
+    """`n_equipos` = cantidad de equipos de la liga (si la tabla trae solo los dos del partido)."""
     if not tabla_data or id_local not in tabla_data or id_visita not in tabla_data:
         return None
-    n = len(tabla_data)
+    n = n_equipos or len(tabla_data)
     for lado, id_f, id_r in ((LOCAL, id_local, id_visita), (VISITA, id_visita, id_local)):
         res = _evaluar_tabla_lado(tabla_data, id_f, id_r, n)
         if res:
@@ -478,5 +478,4 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             "confianza": confianza,
         })
     return resultado
-
 
