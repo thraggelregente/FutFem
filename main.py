@@ -1,12 +1,15 @@
 """
 main.py
-Radar Mismatch Multideporte Femenino 360°
+Radar Mismatch Multideporte Femenino 360° — Resiliente y Multi-Fuente
 
-Flujo:
-  1. ESPN (principal), API-Sports, Highlightly y OddsPapi dan eventos femeninos de las próximas 24h.
-  2. Para cada evento se obtiene el historial de los equipos, el H2H y la tabla de posiciones probando
-     varias fuentes (la del propio evento primero y Highlightly / OddsPapi como respaldo).
-  3. El motor de señales evalúa y, si hay mismatch, avisa por Telegram.
+Fuentes integradas:
+  1. ESPN (principal, sin límite de cuota).
+  2. TheSportsDB (gratuita, sin límite).
+  3. ITF World Tennis Tour (cuadros oficiales W15 a W100).
+  4. API-Sports y OddsPapi (secundarias, cuota protegida).
+  5. Highlightly (apoyo de forma, H2H y tablas).
+
+Enfoque: Exclusivamente deportes femeninos y detección matemática de mismatches.
 """
 
 import html
@@ -19,7 +22,7 @@ from threading import Thread
 import requests
 
 
-# --- 1. SERVIDOR WEB FANTASMA ---
+# --- 1. SERVIDOR WEB FANTASMA (Render Keep-Alive) ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -36,7 +39,9 @@ class SimpleHandler(BaseHTTPRequestHandler):
 
 def iniciar_servidor_web():
     try:
-        HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), SimpleHandler).serve_forever()
+        puerto = int(os.environ.get("PORT", 10000))
+        servidor = HTTPServer(("0.0.0.0", puerto), SimpleHandler)
+        servidor.serve_forever()
     except OSError as e:
         print(f"Servidor web no iniciado ({e}); el radar continúa sin él", flush=True)
 
@@ -69,8 +74,11 @@ def enviar_telegram(mensaje_html):
     llego = False
     for destino in destinos:
         for modo in ("HTML", None):
-            payload = {"chat_id": destino, "disable_web_page_preview": True,
-                       "text": mensaje_html if modo else _sin_html(mensaje_html)}
+            payload = {
+                "chat_id": destino,
+                "disable_web_page_preview": True,
+                "text": mensaje_html if modo else _sin_html(mensaje_html),
+            }
             if modo:
                 payload["parse_mode"] = modo
             try:
@@ -105,23 +113,24 @@ def _importar(nombre, critico=False):
 
 motor_mismatches = _importar("motor_mismatches", critico=True)
 fuente_espn = _importar("fuente_espn")
+fuente_thesportsdb = _importar("fuente_thesportsdb")
 fuente_api_football = _importar("fuente_api_football")
 fuente_highlightly = _importar("fuente_highlightly")
 fuente_oddspapi = _importar("fuente_oddspapi")
+fuentes_alternativas = _importar("fuentes_alternativas")
 
-# Intervalo de revisión: por defecto 1 hora (3600s). Ajustable con la variable de entorno.
 INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "3600"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "100"))
 HORAS_VENTANA_PREVIA = 24
-DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball"]
+DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby"]
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
 _ultimo_aviso_ciego = 0.0
 
 
 # ---------------------------------------------------------------------------
-# ALERTA
+# ALERTA DE TELEGRAM
 # ---------------------------------------------------------------------------
 def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, estado,
                   alertas_base, pick_base, favorito, confianza="Media"):
@@ -157,7 +166,7 @@ def _nuevo_stat():
 
 
 def _procesar_evento(ev, st, ahora_ts):
-    clave = ev["clave"]
+    clave = ev.get("clave") or ev.get("id")
     if registro.visto(clave):
         st["ya_vistos"] += 1
         return False
@@ -169,7 +178,7 @@ def _procesar_evento(ev, st, ahora_ts):
         return False
 
     nom_loc, nom_vis = ev["local"]["nombre"], ev["visita"]["nombre"]
-    if not (ev.get("femenino_seguro") or U.es_femenino(ev["torneo"], nom_loc, nom_vis)):
+    if not (ev.get("femenino_seguro") or U.es_femenino(ev.get("torneo", ""), nom_loc, nom_vis)):
         return False
     st["femeninos"] += 1
 
@@ -199,7 +208,7 @@ def _procesar_evento(ev, st, ahora_ts):
         registro.marcar(clave)
         return True
 
-    # --- Deportes de equipo: historial de varias fuentes ---
+    # --- Deportes de equipo: historial multi-fuente ---
     id_loc, id_vis = ev["local"]["id"], ev["visita"]["id"]
 
     forma_loc = U.historial_desde_fuentes(ev, "local", fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football)
@@ -230,7 +239,6 @@ def _procesar_evento(ev, st, ahora_ts):
         )
 
     res = _evaluar(None)
-    # La tabla suma 2 puntos: solo se pide (gasta cuota) si puede cambiar el resultado.
     if not res["hay_mismatch"] and res["puntaje"] >= 2 and res["puntaje_contrario"] <= 1:
         tabla, n_equipos = U.tabla_desde_fuentes(ev, fuente_highlightly)
         if tabla:
@@ -253,16 +261,45 @@ def _procesar_evento(ev, st, ahora_ts):
 
 
 # ---------------------------------------------------------------------------
-# BARRIDO
+# RECOLECCIÓN Y BARRIDO
 # ---------------------------------------------------------------------------
+def _barrido_itf(resumen):
+    if not fuentes_alternativas:
+        return
+    st = resumen.setdefault("itf:Tennis", _nuevo_stat())
+    partidos = fuentes_alternativas.obtener_mismatches_itf()
+    st["eventos"] = len(partidos)
+    for m in partidos:
+        mid = m["id"]
+        if registro.visto(mid):
+            st["ya_vistos"] += 1
+            continue
+        st["analizados"] += 1
+        fav = m["favorito"]
+        nom_fav = m["local"] if fav == motor_mismatches.LOCAL else m["visita"]
+        enviar_alerta(
+            deporte="Tennis", torneo=m["torneo"], nom_loc=m["local"], nom_vis=m["visita"],
+            hora_txt=m["horario"], estado="🟢 <b>PRE</b>", alertas_base=[m["detalle"]],
+            pick_base=motor_mismatches.sugerir_mercado("Tennis", fav, nom_fav),
+            favorito=fav, confianza="Media",
+        )
+        registro.marcar(mid)
+        registro.guardar()
+        st["alertas"] += 1
+
+
 def _recolectar_eventos(resumen):
     por_clave = {}
-    fuentes = [(fuente_espn, "espn"), (fuente_api_football, "api_sports"),
-               (fuente_highlightly, "highlightly"), (fuente_oddspapi, "oddspapi")]
+    fuentes = [
+        (fuente_espn, "espn"),
+        (fuente_thesportsdb, "thesportsdb"),
+        (fuente_api_football, "api_sports"),
+        (fuente_highlightly, "highlightly"),
+        (fuente_oddspapi, "oddspapi"),
+    ]
     for modulo, nombre in fuentes:
         if modulo is None:
             continue
-        # Comprobar si está disponible (sin clave, deshabilitada, etc.)
         if hasattr(modulo, "disponible") and not modulo.disponible():
             continue
         for deporte in DEPORTES_RADAR:
@@ -274,9 +311,10 @@ def _recolectar_eventos(resumen):
             if not eventos:
                 continue
             st = resumen.setdefault(f"{nombre}:{deporte}", _nuevo_stat())
-            st["eventos"] = len(eventos)
+            st["eventos"] += len(eventos)
             for ev in eventos:
-                por_clave.setdefault(ev["clave"], ev)
+                clave = ev.get("clave") or ev.get("id")
+                por_clave.setdefault(clave, ev)
     return list(por_clave.values())
 
 
@@ -324,14 +362,21 @@ def ejecutar_barrido_radar():
     ahora_ts = time.time()
     analizados = 0
 
+    # 1. Barrido de Tenis ITF Oficial
+    try:
+        _barrido_itf(resumen)
+    except Exception as e:
+        U.log(f"Error en etapa ITF: {type(e).__name__}: {e}")
+
+    # 2. Recolección multi-fuente de deportes de equipo
     eventos = _recolectar_eventos(resumen)
     eventos.sort(key=lambda e: e.get("startTimestamp", 0))
 
     for ev in eventos:
         if analizados >= MAX_ANALISIS_POR_CICLO:
-            U.log(f"Tope de {MAX_ANALISIS_POR_CICLO} análisis por ciclo")
+            U.log(f"Tope de {MAX_ANALISIS_POR_CICLO} análisis por ciclo alcanzado")
             break
-        st = resumen.setdefault(f"{ev['fuente']}:{ev['deporte']}", _nuevo_stat())
+        st = resumen.setdefault(f"{ev.get('fuente', 'ext')}:{ev.get('deporte', 'Multi')}", _nuevo_stat())
         try:
             if _procesar_evento(ev, st, ahora_ts):
                 analizados += 1
@@ -353,7 +398,11 @@ if __name__ == "__main__":
     fuentes = []
     if fuente_espn:
         fuentes.append("ESPN")
-    if fuente_api_football and fuente_api_football.API_KEY:
+    if fuente_thesportsdb:
+        fuentes.append("TheSportsDB")
+    if fuentes_alternativas:
+        fuentes.append("ITF Tennis")
+    if fuente_api_football and fuente_api_football.disponible():
         fuentes.append("API-Sports")
     if fuente_highlightly and fuente_highlightly.disponible():
         fuentes.append("Highlightly")
@@ -367,7 +416,7 @@ if __name__ == "__main__":
         f"Persistencia: {html.escape(U.modo_persistencia())}"
     )
     if not U.persistencia_es_duradera():
-        aviso += ("\n⚠️ Sin disco persistente: tras un deploy puede repetir alertas.")
+        aviso += "\n⚠️ Sin disco persistente: tras un deploy puede repetir alertas."
     enviar_telegram(aviso)
 
     while True:
