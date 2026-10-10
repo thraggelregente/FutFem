@@ -612,9 +612,12 @@ def ejecutar_barrido_radar():
     resumen = {}
 
     etapas = []
-    if fuentes_alternativas:
+    # ITF y BeSoccer vienen APAGADAS: sus URLs no existen (ITF da 404, BeSoccer devuelve HTML).
+    # Sofascore ya cubre tenis ITF femenino (con ranking) y ligas de ascenso/formativas.
+    # Para reactivarlas cuando tengas un endpoint real: ACTIVAR_ITF=1 / ACTIVAR_BESOCCER=1
+    if fuentes_alternativas and os.environ.get("ACTIVAR_ITF") == "1":
         etapas.append(("itf", _barrido_itf))
-    if conector_besoccer:
+    if conector_besoccer and os.environ.get("ACTIVAR_BESOCCER") == "1":
         etapas.append(("besoccer", _barrido_besoccer))
     etapas.append(("sofascore", _barrido_sofascore))
 
