@@ -11,6 +11,7 @@ Radar Mismatch Multideporte Femenino 360° — Resiliente
 import html
 import os
 import re
+import subprocess
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -145,7 +146,7 @@ except Exception as e:
     U.log(f"Aviso: monitor_noticias no disponible: {e}")
 
 
-INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "600"))
+INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "80"))
 HORAS_VENTANA_PREVIA = 24
@@ -194,6 +195,46 @@ _ultimo_aviso_fuente = {}
 
 
 # ---------------------------------------------------------------------------
+# DIAGNÓSTICO DE PLAYWRIGHT (TEMPORAL)
+# ---------------------------------------------------------------------------
+def _diagnostico_playwright():
+    U.log("=" * 60)
+    U.log("DIAGNÓSTICO DE PLAYWRIGHT")
+    U.log("=" * 60)
+
+    rutas = [
+        "/ms-playwright",
+        os.path.expanduser("~/.cache/ms-playwright"),
+        "/root/.cache/ms-playwright",
+        "/opt/render/.cache/ms-playwright",
+    ]
+    for ruta in rutas:
+        if os.path.exists(ruta):
+            U.log(f"✅ Existe: {ruta}")
+            try:
+                for item in os.listdir(ruta):
+                    U.log(f"   - {item}")
+            except Exception as e:
+                U.log(f"   (no se pudo listar: {e})")
+        else:
+            U.log(f"❌ No existe: {ruta}")
+
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=True)
+                U.log("✅ Chromium se abrió correctamente")
+                browser.close()
+            except Exception as e:
+                U.log(f"❌ ERROR al abrir Chromium: {type(e).__name__}: {e}")
+    except Exception as e:
+        U.log(f"❌ ERROR importando Playwright: {type(e).__name__}: {e}")
+
+    U.log("=" * 60)
+
+
+# ---------------------------------------------------------------------------
 # FILTRO FEMENINO
 # ---------------------------------------------------------------------------
 _RE_FEMENINO_FUERTE = re.compile(r"\b(wta|itf women|billie jean king)\b")
@@ -218,11 +259,10 @@ def es_deporte_femenino_valido(torneo, local, visita):
 # ---------------------------------------------------------------------------
 # SOFASCORE
 # ---------------------------------------------------------------------------
-# En main.py, reemplaza la función _sofa_get:
-
 def _sofa_get(url):
     time.sleep(0.4)
     return U.get_json_sofascore(url)
+
 
 def obtener_partidos_sofascore(slug):
     """Eventos de hoy y mañana (hora ARG), sin duplicados."""
@@ -604,6 +644,7 @@ def _avisar_fuentes_caidas():
 
 def ejecutar_barrido_radar():
     U.reiniciar_estadisticas()
+    _diagnostico_playwright()
     U.log("Ejecutando barrido Radar Femenino 360°...")
     if motor_mismatches is None:
         U.log("motor_mismatches no está disponible: se omite el barrido")

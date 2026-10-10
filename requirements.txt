@@ -1,4 +1,4 @@
 requests
 tzdata
-playwright
 curl_cffi
+playwright==1.63.0
