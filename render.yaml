@@ -1,8 +1,9 @@
 services:
   - type: web
     name: radar-femenino-bot
-    env: docker
-    dockerfilePath: ./Dockerfile
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
     plan: free
     healthCheckPath: /
     envVars:
