@@ -97,7 +97,7 @@ def enviar_telegram(mensaje_html):
                 continue
             U.log(f"Telegram: HTTP {r.status_code} con chat {destino} (modo {modo}): {r.text[:150]}")
             if r.status_code != 400:
-                break  # el reintento en texto plano solo sirve para errores de formato
+                break
 
     return llego
 
@@ -141,11 +141,11 @@ except Exception as e:
     U.log(f"Aviso: monitor_noticias no disponible: {e}")
 
 
-INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))  # 30 minutos
+INTERVALO_REVISION = int(os.environ.get("INTERVALO_REVISION", "1800"))
 ARCHIVO_NOTIFICADOS = "notificados.json"
 MAX_ANALISIS_POR_CICLO = int(os.environ.get("MAX_ANALISIS_POR_CICLO", "80"))
-HORAS_VENTANA_PREVIA = 24  # solo se analiza lo que arranca dentro de las próximas 24 h
-FUENTES_CON_AVISO = {"sofascore"}  # si esta fuente cae por completo, se avisa por Telegram
+HORAS_VENTANA_PREVIA = 24
+FUENTES_CON_AVISO = {"sofascore"}
 
 DEPORTES_RADAR = {
     "volleyball": "Volleyball",
@@ -171,14 +171,13 @@ KEYWORDS_FEMENINAS = [
     "liga f", "serie a fem", "frauen-bundesliga", "sdhl", "pwhl",
 ]
 
-HEADERS_SOFASCORE = dict(
-    U.HEADERS_NAVEGADOR,
-    Referer="https://www.sofascore.com/",
-    Origin="https://www.sofascore.com",
-)
+HEADERS_SOFASCORE = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Cache-Control": "max-age=0"
+}
 
-# Si Sofascore bloquea la IP de Render (403) se puede definir un proxy: SOFASCORE_PROXY=http://user:pass@host:puerto
-```python
 PROXIES_SOFASCORE = None
 
 registro = U.RegistroVistos(ARCHIVO_NOTIFICADOS)
@@ -195,7 +194,6 @@ _RE_MASCULINO = re.compile(
     r"\b(atp|challenger|davis cup|men|mens|men's|masculino|masculin|herren|hommes|maschile)\b"
 )
 _RE_KEYWORDS_FEM = re.compile(r"\b(" + "|".join(re.escape(k) for k in KEYWORDS_FEMENINAS) + r")\b")
-# "(W)", "(F)", "Arsenal W", "ITF W35 ..."
 _RE_PATRONES_FEM = re.compile(r"\((w|f)\)|\bw\b|\bw\s?\d{2,3}\b")
 
 
@@ -214,6 +212,7 @@ def es_deporte_femenino_valido(torneo, local, visita):
 # SOFASCORE
 # ---------------------------------------------------------------------------
 def _sofa_get(url):
+    time.sleep(0.4)
     return U.get_json(url, "sofascore", headers=HEADERS_SOFASCORE, timeout=12, proxies=PROXIES_SOFASCORE)
 
 
@@ -294,7 +293,6 @@ def obtener_ultimos_partidos(team_id):
         return []
 
     eventos = [e for e in data.get("events", []) or [] if (e.get("status") or {}).get("type") == "finished"]
-    # Los más recientes primero
     eventos.sort(key=lambda e: e.get("startTimestamp", 0), reverse=True)
     partidos = [_convertir_evento_historico(e) for e in eventos[:8]]
     _cache_historial.set(team_id, partidos)
@@ -418,7 +416,7 @@ def _barrido_besoccer(resumen):
             st["ya_vistos"] += 1
             continue
         if not p.get("tiene_alineaciones"):
-            continue  # se reintenta en el próximo barrido, cuando salgan las alineaciones
+            continue
 
         st["analizados"] += 1
         rot = conector_besoccer.verificar_rotacion_plantel(p["id"].replace("besoccer_", ""))
@@ -444,7 +442,6 @@ def _barrido_besoccer(resumen):
 
 
 def _procesar_evento_sofascore(ev, deporte_nombre, ahora_ts, st):
-    """Devuelve True si analizó el evento (para el tope de análisis por ciclo)."""
     event_id = ev["id"]
     id_unico = f"sofa_{event_id}"
 
@@ -467,7 +464,6 @@ def _procesar_evento_sofascore(ev, deporte_nombre, ahora_ts, st):
         st["ya_vistos"] += 1
         return False
 
-    # Solo partidos vigentes: antes se etiquetaba "PRE" hasta lo ya terminado
     tipo_estado = (ev.get("status") or {}).get("type")
     if tipo_estado not in ("notstarted", "inprogress"):
         st["no_vigentes"] += 1
@@ -475,14 +471,14 @@ def _procesar_evento_sofascore(ev, deporte_nombre, ahora_ts, st):
 
     start_ts = ev.get("startTimestamp", 0)
     if tipo_estado == "notstarted" and start_ts > ahora_ts + HORAS_VENTANA_PREVIA * 3600:
-        st["lejanos"] += 1  # se analizará más cerca del partido, con datos más frescos
+        st["lejanos"] += 1
         return False
 
     hora_txt = U.formatear_hora_arg(start_ts)
     estado = "🔴 <b>EN VIVO (LIVE)</b>" if tipo_estado == "inprogress" else "🟢 <b>PRE</b>"
     st["analizados"] += 1
 
-    # --- Tenis: asimetría de ranking ---
+    # Tenis
     if deporte_nombre == "Tennis":
         hay, detalle, favorito = motor_mismatches.evaluar_mismatch_tenis(
             nom_loc, nom_vis, local_obj.get("ranking"), visita_obj.get("ranking")
@@ -499,7 +495,7 @@ def _procesar_evento_sofascore(ev, deporte_nombre, ahora_ts, st):
         registro.marcar(id_unico)
         return True
 
-    # --- Deportes de equipo ---
+    # Deportes de equipo
     tourn_id = (torneo_obj.get("uniqueTournament") or {}).get("id")
     season_id = (ev.get("season") or {}).get("id")
 
@@ -552,8 +548,6 @@ def _barrido_sofascore(resumen):
                 if _procesar_evento_sofascore(ev, deporte_nombre, ahora_ts, st):
                     analizados_total += 1
             except Exception as e:
-                # Un evento defectuoso no puede trabar el barrido. Se marca como visto
-                # para que no vuelva a fallar en cada ciclo.
                 st["errores"] += 1
                 U.log(f"Error en evento {ev.get('id')} ({deporte_nombre}): {type(e).__name__}: {e}")
                 U.log(traceback.format_exc().strip().splitlines()[-3])
@@ -579,7 +573,6 @@ def _imprimir_resumen(resumen):
 
 
 def _avisar_fuentes_caidas():
-    """Si una fuente clave no devolvió ni un 200 en todo el barrido, avisa (máx. 1 vez cada 6 h)."""
     for fuente in FUENTES_CON_AVISO:
         codigos = U.ESTADISTICAS.get(fuente)
         if not codigos:
