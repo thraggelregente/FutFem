@@ -222,7 +222,6 @@ def es_deporte_femenino_valido(torneo, local, visita):
 
 def _sofa_get(url):
     time.sleep(0.4)
-    # Usamos Playwright para evitar bloqueos de Cloudflare
     return U.get_json_sofascore(url)
 
 def obtener_partidos_sofascore(slug):
