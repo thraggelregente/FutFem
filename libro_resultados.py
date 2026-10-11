@@ -160,7 +160,6 @@ def historial_equipo(evento, lado, limite=10):
 
 
 def h2h_equipos(deporte, nombre_local, nombre_visita, id_local=None, id_visita=None):
-    """Busca cruces directos entre dos equipos registrados en el libro."""
     fl, fv = U.firma_equipo(nombre_local), U.firma_equipo(nombre_visita)
     if not fl or not fv or fl == fv:
         return []

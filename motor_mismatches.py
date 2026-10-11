@@ -2,7 +2,7 @@
 motor_mismatches.py
 Cerebro cuantitativo del Radar Femenino (simétrico: el favorito puede ser local o visitante).
 Jerarquía de Análisis:
-- Nivel 1: Forma actual de la temporada vigente (partidos recientes de los últimos 45 días dominan).
+- Nivel 1: Forma actual de la temporada vigente (partidos recientes de los últimos 35 días dominan).
 - Nivel 2: Contexto reciente / H2H de los últimos 12 meses.
 - Nivel 3: Descarte de partidos lejanos (> 90 días para forma, > 36 meses para H2H).
 """
@@ -58,9 +58,6 @@ def obtener_umbral_deporte(deporte):
     return umbrales.get(deporte, 5.0)
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 1: TABLA
-# ---------------------------------------------------------------------------
 def _partidos_tabla(fila):
     return fila.get("victorias", 0) + fila.get("empates", 0) + fila.get("derrotas", 0)
 
@@ -104,9 +101,6 @@ def evaluar_tabla_posiciones(tabla_data, id_local, id_visita, n_equipos=None):
     return {"es_mismatch_tabla": False, "favorito": None, "detalle": "", "delta_posiciones": 0}
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 2: FORMA RECIENTE
-# ---------------------------------------------------------------------------
 def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
     vacio = {"dif_prom": 0.0, "victorias": 0, "derrotas": 0, "muestras": 0}
     if not partidos:
@@ -145,9 +139,6 @@ def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
     }
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 3: TRIANGULACIÓN
-# ---------------------------------------------------------------------------
 def _clave_rival(rival_id, rival_nombre):
     if rival_nombre:
         return "n:" + U.firma_equipo(rival_nombre)
@@ -203,13 +194,10 @@ def triangular_rivales(partidos_local, id_local, partidos_visita, id_visita):
     }
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 4: H2H EXTENDIDO
-# ---------------------------------------------------------------------------
 def analizar_h2h_extendido(historial_h2h, id_local, id_visita):
-    h2h_reciente = []  # 0-6 meses
-    h2h_medio = []     # 6-18 meses
-    h2h_viejo = []     # 18-36 meses
+    h2h_reciente = []
+    h2h_medio = []
+    h2h_viejo = []
 
     for p in historial_h2h or []:
         dias = calcular_dias_atras(p.get("fecha", ""))
@@ -243,9 +231,6 @@ def analizar_h2h_extendido(historial_h2h, id_local, id_visita):
     }
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 5: TENIS (ranking + Wild Card)
-# ---------------------------------------------------------------------------
 def _rank_valido(rank):
     try:
         r = int(rank)
@@ -304,9 +289,6 @@ def ajustar_tenis_por_contexto(favorito_lado, ctx):
     return max(-2, min(2, int(ctx.get("favorita_ventaja", 0)))), list(ctx.get("detalles", []))
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 6: DESCANSO
-# ---------------------------------------------------------------------------
 def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
     def _dias_ultimo_partido(partidos):
         for p in (partidos or [])[:3]:
@@ -329,9 +311,6 @@ def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
     return None
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 10: CONGESTIÓN DE CALENDARIO
-# ---------------------------------------------------------------------------
 def _partidos_en_dias(partidos, dias):
     return sum(1 for p in (partidos or [])[:8] if calcular_dias_atras(p.get("fecha", "")) <= dias)
 
@@ -349,9 +328,6 @@ def evaluar_congestion(partidos_a, id_a, partidos_b, id_b, dias=7, minimo_histor
     return None
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 8: MOMENTUM (racha)
-# ---------------------------------------------------------------------------
 def evaluar_momentum(partidos, id_equipo):
     racha = 0
     for p in partidos[:6]:
@@ -369,9 +345,6 @@ def evaluar_momentum(partidos, id_equipo):
     return racha
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 11: ELO
-# ---------------------------------------------------------------------------
 def evaluar_elo(elo):
     if not elo:
         return None
@@ -394,9 +367,6 @@ def evaluar_elo(elo):
     }
 
 
-# ---------------------------------------------------------------------------
-# SEÑAL 12: PLANTEL (bajas confirmadas)
-# ---------------------------------------------------------------------------
 def evaluar_plantel(bajas_local, bajas_visita, deporte):
     if not bajas_local or not bajas_visita:
         return None
@@ -416,9 +386,6 @@ def sugerir_mercado(deporte, favorito, nombre_fav=None):
     return None
 
 
-# ---------------------------------------------------------------------------
-# DECISIÓN FINAL
-# ---------------------------------------------------------------------------
 def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                      tabla_local_visita=None, datos_extra=None):
     puntos = {LOCAL: 0, VISITA: 0}
@@ -430,11 +397,9 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
         textos[lado].append(texto)
         grupos[lado].add(grupo)
 
-    # Señal 1: Tabla (2 pts)
     if tabla_local_visita and tabla_local_visita.get("es_mismatch_tabla"):
         sumar(tabla_local_visita["favorito"], 2, tabla_local_visita["detalle"], "tabla")
 
-    # Señal 2: Forma reciente (2 pts base + 1 extra)
     forma_sumo = {LOCAL: False, VISITA: False}
     umbral = obtener_umbral_deporte(deporte)
     if umbral is not None:
@@ -454,7 +419,6 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                         f"{pr['dif_prom']:+} ({pr['derrotas']}D en {pr['muestras']})"
                     ))
 
-    # Señal 3: Triangulación (1-3 pts)
     for clave, fav in (("local", LOCAL), ("visita", VISITA)):
         lista = (triangulaciones or {}).get(clave) or []
         if lista:
@@ -466,7 +430,6 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                 f"({len(lista)} rival/es en común)"
             ))
 
-    # Señal 4: H2H extendido (0.5-2 pts)
     if h2h:
         for fav in (LOCAL, VISITA):
             recientes = [x for x in h2h.get("reciente", []) if x["ganador"] == fav]
@@ -487,29 +450,24 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                     detalle += f" vs {total_rival} del rival"
                 sumar(fav, pts, detalle, "h2h")
 
-    # Señal 6: Descanso (0-1 pt)
     if datos_extra and datos_extra.get("descanso"):
         d = datos_extra["descanso"]
         sumar(d["favorito"], 1, d["detalle"])
 
-    # Señal 10: Congestión de calendario (0-1 pt)
     if datos_extra and datos_extra.get("congestion"):
         c = datos_extra["congestion"]
         d = datos_extra.get("descanso")
         if not (d and d.get("favorito") == c["favorito"]):
             sumar(c["favorito"], 1, c["detalle"])
 
-    # Señal 11: Elo (0-3 pts)
     if datos_extra and datos_extra.get("elo"):
         e = datos_extra["elo"]
         sumar(e["favorito"], e["puntos"], e["detalle"], "fuerza")
 
-    # Señal 12: Plantel (0-2 pts)
     if datos_extra and datos_extra.get("plantel"):
         pl_ = datos_extra["plantel"]
         sumar(pl_["favorito"], pl_["puntos"], pl_["detalle"], "plantel")
 
-    # Señal 8: Momentum (0-2 pts)
     if datos_extra:
         racha_loc = datos_extra.get("racha_local", 0)
         racha_vis = datos_extra.get("racha_visita", 0)
@@ -518,7 +476,6 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
         if racha_vis >= 4 and not forma_sumo[VISITA]:
             sumar(VISITA, 2 if racha_vis >= 6 else 1, f"Momentum: {VISITA} {racha_vis} victorias seguidas")
 
-    # Decisión
     favorito = LOCAL if puntos[LOCAL] >= puntos[VISITA] else VISITA
     contrario = _otro(favorito)
     puntaje, puntaje_contra = puntos[favorito], puntos[contrario]

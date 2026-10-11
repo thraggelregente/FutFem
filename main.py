@@ -132,7 +132,7 @@ tenis_contexto = _importar("tenis_contexto")
 registro = U.RegistroVistos(ARCHIVO_ALERTADOS, dias_retencion=3)
 _ultimo_aviso_ciego = 0.0
 
-# Persistencia duradera de enfriamiento (para que sobrevivia reinicios de Render)
+
 def _cargar_enfriamiento() -> dict[str, tuple[float, int]]:
     crudo = U.cargar_json(ARCHIVO_ENFRIAMIENTO, {})
     if not isinstance(crudo, dict):
@@ -177,7 +177,6 @@ def _recortar_html(texto: str, limite: int = 4000) -> str:
 
 def _post_telegram(url: str, payload: dict[str, Any], destino: str):
     try:
-        # Enviar con charset UTF-8 explícito para evitar mojibake / símbolos raros
         headers = {"Content-Type": "application/json; charset=utf-8"}
         cuerpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         respuesta = requests.post(url, data=cuerpo, headers=headers, timeout=12)
@@ -554,7 +553,6 @@ def _procesar_evento(ev, st, ahora_ts):
     perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis, deporte)
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
     
-    # H2H cruzando observaciones y libro de resultados
     h2h_raw = U.h2h_desde_fuentes(
         ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis, libro_resultados=libro_resultados
     )

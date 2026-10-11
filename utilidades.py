@@ -60,9 +60,7 @@ def formatear_hora_arg(ts):
 
 
 _RE_SECRETO = re.compile(
-_RE_SECRETO = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'\"<>]+)"
-)
+    r"(?i)\b(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s\'\"<>]+)"
 )
 _RE_BOT_TELEGRAM = re.compile(r"/bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
@@ -632,14 +630,6 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
 
 
 def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita, libro_resultados=None):
-    """
-    H2H entre local y visita en formato interno, o [].
-    Orden:
-    1) Los cruces que ya están en el historial del local;
-    2) Cruces acumulados en el libro de resultados;
-    3) Highlightly (por ids propios o por nombre);
-    4) OddsPapi.
-    """
     h2h_local = [p for p in (hist_local or []) if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
     if h2h_local:
         return h2h_local
@@ -647,7 +637,6 @@ def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuent
     loc, vis = evento.get("local") or {}, evento.get("visita") or {}
     nom_loc, nom_vis = loc.get("nombre", ""), vis.get("nombre", "")
 
-    # Búsqueda en libro_resultados por nombre si existe
     if libro_resultados and nom_loc and nom_vis:
         try:
             h2h_libro = libro_resultados.h2h_equipos(evento.get("deporte", "Soccer"), nom_loc, nom_vis, loc.get("id"), vis.get("id"))
