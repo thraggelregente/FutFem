@@ -1,22 +1,9 @@
-﻿"""Libro de resultados: memoria persistente de partidos femeninos terminados.
+"""Libro de resultados: memoria persistente de partidos femeninos terminados.
 
-Para quÃ© sirve
-- Cada vez que cualquier fuente trae resultados (historial de liga de ESPN, Ãºltimos partidos de
-  Highlightly o TheSportsDB, el feed diario de terminados de OddsPapi, los scores de The Odds API...)
-  los partidos se anotan acÃ¡ una sola vez (deduplicados entre fuentes).
-- Con el tiempo el libro acumula MUCHOS mÃ¡s partidos por equipo que los ~5 que da una consulta
-  puntual. Con eso se calcula:
-    1) un historial por nombre para equipos de ligas "solo calendario" (adiÃ³s a muchos [sin-datos]);
-    2) un rating Elo ajustado por la fuerza del rival y por la localÃ­a de cada deporte.
-- El libro NO contiene cuotas ni datos de mercado: solo fecha, equipos y marcador.
-
-GarantÃ­as de rigor
-- Solo entran partidos que las fuentes declaran femeninos (el libro nunca mezcla ligas masculinas).
-- El Elo solo se calcula entre equipos del MISMO componente conexo del grafo de partidos (si dos equipos
-  nunca se cruzaron, directa o indirectamente, sus ratings no son comparables y no se emite seÃ±al).
-- Se exigen MIN_PARTIDOS_ELO partidos por equipo y actividad en los Ãºltimos 75 dÃ­as.
-- Persistencia: Upstash (recomendado en Render) o archivo en DATA_DIR. Tope de MAX_PARTIDOS
-  partidos y DIAS_RETENCION dÃ­as para no crecer sin lÃ­mite.
+Para qué sirve:
+- Memoria persistente deduplicada de resultados terminados.
+- Historial por nombre para ligas solo calendario.
+- Rating Elo y consulta directa de H2H acumulado.
 """
 
 from __future__ import annotations
@@ -36,15 +23,13 @@ MIN_PARTIDOS_ELO = max(3, int(os.environ.get("ELO_MIN_PARTIDOS", "5")))
 ACTIVIDAD_MAX_DIAS = 75
 ELO_INICIAL = 1500.0
 
-# Factor K y ventaja de local (en puntos Elo) por deporte. Valores iniciales conservadores,
-# calibrables con la evidencia propia del libro; para deportes sin entrada se usa el DEFECTO.
 K_ELO = {"Soccer": 24, "Basketball": 22, "Ice Hockey": 22, "Volleyball": 26, "Handball": 24, "Rugby": 24}
 VENTAJA_LOCAL_ELO = {"Soccer": 55, "Basketball": 70, "Ice Hockey": 40, "Volleyball": 45, "Handball": 55, "Rugby": 55}
 ESCALA_MARGEN = {"Soccer": 1.0, "Ice Hockey": 1.0, "Volleyball": 1.0, "Basketball": 10.0, "Handball": 4.0, "Rugby": 8.0}
 K_DEFECTO, HFA_DEFECTO, ESCALA_DEFECTO = 24, 50, 2.0
 
 _lock = threading.RLock()
-_partidos: dict[str, list] = {}   # clave -> [ts, deporte, firma_local, firma_visita, nom_local, nom_visita, pl, pv]
+_partidos: dict[str, list] = {}
 _sucio = {"v": False}
 _version = {"n": 0}
 _cache_elo: dict[str, tuple[int, dict]] = {}
@@ -94,11 +79,6 @@ def _entero(valor):
 
 
 def ingestar(deporte, partidos, fuente=""):
-    """
-    Anota partidos terminados en el formato interno del radar
-    ({fecha, nom_local, nom_visita, puntos_local, puntos_visita, ...}). Devuelve cuÃ¡ntos son nuevos.
-    Nunca lanza excepciones: una fuente defectuosa no debe romper el barrido.
-    """
     nuevos = 0
     try:
         ahora = time.time()
@@ -114,8 +94,6 @@ def ingestar(deporte, partidos, fuente=""):
                 if not fl or not fv or fl == fv:
                     continue
                 clave, _ = _clave(deporte, fl, fv, ts)
-                # Un proveedor que se equivoca unas horas puede mover el partido de dÃ­a: se revisan los vecinos.
-                # (mismo cruce con diferencia horaria <= 10 h = el mismo partido visto por otra fuente)
                 if any(
                     (e := _partidos.get(_clave(deporte, fl, fv, ts + d)[0])) is not None and abs(e[0] - ts) <= 10 * 3600
                     for d in (0, -86400, 86400)
@@ -126,13 +104,12 @@ def ingestar(deporte, partidos, fuente=""):
             if nuevos:
                 _sucio["v"] = True
                 _version["n"] += 1
-    except Exception as exc:  # defensivo: el libro nunca rompe a quien lo llama
+    except Exception as exc:
         U.log(f"[libro] error ingestando de {fuente or '?'}: {type(exc).__name__}")
     return nuevos
 
 
 def guardar():
-    """Poda por antigÃ¼edad y tope, y persiste si hubo cambios."""
     with _lock:
         if not _sucio["v"]:
             return False
@@ -155,9 +132,6 @@ def total():
         return len(_partidos)
 
 
-# ---------------------------------------------------------------------------
-# HISTORIAL POR NOMBRE
-# ---------------------------------------------------------------------------
 def _partidos_de(deporte, firma):
     return sorted(
         (v for v in _partidos.values() if v[1] == deporte and firma in (v[2], v[3])),
@@ -166,11 +140,6 @@ def _partidos_de(deporte, firma):
 
 
 def historial_equipo(evento, lado, limite=10):
-    """
-    Ãšltimos partidos del equipo del evento (formato interno, mÃ¡s reciente primero). El id del equipo
-    consultado es el del evento; los rivales llevan ids sintÃ©ticos `lib:<firma>` (el motor los identifica
-    por nombre).
-    """
     equipo = evento.get(lado) or {}
     nombre, deporte = equipo.get("nombre"), evento.get("deporte")
     if not nombre or not deporte:
@@ -190,8 +159,34 @@ def historial_equipo(evento, lado, limite=10):
     return salida
 
 
+def h2h_equipos(deporte, nombre_local, nombre_visita, id_local=None, id_visita=None):
+    """Busca cruces directos entre dos equipos registrados en el libro."""
+    fl, fv = U.firma_equipo(nombre_local), U.firma_equipo(nombre_visita)
+    if not fl or not fv or fl == fv:
+        return []
+    with _lock:
+        filas = sorted(
+            (v for v in _partidos.values() if v[1] == deporte and {fl, fv} == {v[2], v[3]}),
+            key=lambda v: v[0], reverse=True
+        )
+    salida = []
+    id_loc_out = str(id_local) if id_local is not None else f"lib:{fl}"
+    id_vis_out = str(id_visita) if id_visita is not None else f"lib:{fv}"
+    for ts, _dep, fl_part, fv_part, nl, nv, pl, pv in filas:
+        es_local_actual = (fl_part == fl)
+        salida.append({
+            "fecha": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+            "id_local": id_loc_out if es_local_actual else id_vis_out,
+            "nom_local": nl,
+            "id_visita": id_vis_out if es_local_actual else id_loc_out,
+            "nom_visita": nv,
+            "puntos_local": pl,
+            "puntos_visita": pv,
+        })
+    return salida
+
+
 def tiene_historial(evento, minimo=4):
-    """True si el libro ya tiene al menos `minimo` partidos de AMBOS equipos del evento."""
     deporte = evento.get("deporte")
     firmas = []
     for lado in ("local", "visita"):
@@ -203,9 +198,6 @@ def tiene_historial(evento, minimo=4):
         return all(len(_partidos_de(deporte, f)) >= minimo for f in firmas)
 
 
-# ---------------------------------------------------------------------------
-# ELO
-# ---------------------------------------------------------------------------
 def _esperado(r_a, r_b, ventaja):
     return 1.0 / (1.0 + 10 ** (-(r_a - r_b + ventaja) / 400.0))
 
@@ -246,10 +238,6 @@ def _recalcular(deporte):
 
 
 def consulta_elo(deporte, nombre_local, nombre_visita):
-    """
-    Elo de los dos equipos y probabilidad de victoria del local (con su ventaja de localÃ­a) o None si no
-    hay evidencia suficiente: pocos partidos, inactividad, o equipos sin conexiÃ³n entre sÃ­.
-    """
     if not deporte or not nombre_local or not nombre_visita:
         return None
     datos = _recalcular(deporte)

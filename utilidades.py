@@ -1,13 +1,13 @@
-﻿"""
+"""
 utilidades.py
 Funciones compartidas por todo el radar:
 - Hora de Argentina (zona horaria real, no la del servidor).
-- Logging y estadÃ­sticas por fuente (cuÃ¡ntas respuestas 200 / 403 / errores).
+- Logging y estadísticas por fuente (cuántas respuestas 200 / 403 / errores).
 - HTTP con manejo de errores visible (nada falla en silencio), con soporte de proxy.
 - Cache con vencimiento.
 - Persistencia de partidos ya vistos (Upstash Redis o archivo en DATA_DIR).
-- NormalizaciÃ³n y comparaciÃ³n de nombres de equipos / jugadoras.
-- RedacciÃ³n automÃ¡tica de claves y tokens en los logs.
+- Normalización y comparación de nombres de equipos / jugadoras.
+- Redacción automática de claves y tokens en los logs.
 """
 
 import json
@@ -60,7 +60,7 @@ def formatear_hora_arg(ts):
 
 
 _RE_SECRETO = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'\"<>]+)"
+    r"(?i)(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'"<>]+)"
 )
 _RE_BOT_TELEGRAM = re.compile(r"/bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
@@ -80,7 +80,7 @@ if curl_requests is None:
 
 
 # ---------------------------------------------------------------------------
-# HTTP + ESTADÃSTICAS POR FUENTE
+# HTTP + ESTADÍSTICAS POR FUENTE
 # ---------------------------------------------------------------------------
 HEADERS_NAVEGADOR = {
     "User-Agent": (
@@ -133,9 +133,8 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
             clave = (fuente, type(e_curl).__name__)
             if clave not in _avisos_curl:
                 _avisos_curl.add(clave)
-                log(f"[{fuente}] curl_cffi fallÃ³ ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
+                log(f"[{fuente}] curl_cffi falló ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
             if "timeout" in type(e_curl).__name__.lower() or "timed out" in str(e_curl).lower():
-                # Reintentar con requests duplicarÃ­a la espera sobre el mismo servidor lento.
                 _registrar(fuente, "error_red")
                 return None
     try:
@@ -197,8 +196,6 @@ def get_texto(url, fuente, headers=None, params=None, timeout=15):
 # CACHE CON VENCIMIENTO
 # ---------------------------------------------------------------------------
 class CacheTTL:
-    """Cache en memoria. `set(..., ttl=)` permite un vencimiento propio (p. ej. fallos de 5 min)."""
-
     def __init__(self, ttl_segundos):
         self.ttl = ttl_segundos
         self._datos = {}
@@ -226,7 +223,7 @@ class CacheTTL:
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 UPSTASH_URL = (os.environ.get("UPSTASH_REDIS_REST_URL") or "").strip()
 UPSTASH_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN") or "").strip()
-_UPSTASH_ULTIMO_OK = None  # None = todavÃ­a no se probÃ³ en este proceso
+_UPSTASH_ULTIMO_OK = None
 
 
 def usa_upstash():
@@ -234,8 +231,6 @@ def usa_upstash():
 
 
 def persistencia_es_duradera():
-    # No anunciar persistencia remota sana si ya fallÃ³ una operaciÃ³n de Upstash.
-    # El primer GET de RegistroVistos sucede al importar main, antes del aviso de inicio.
     if usa_upstash():
         return _UPSTASH_ULTIMO_OK is not False
     return "DATA_DIR" in os.environ
@@ -273,7 +268,7 @@ def cargar_json(nombre, defecto):
             res = _upstash(["GET", f"radar:{nombre}"])
             return json.loads(res) if res else defecto
         except Exception as e:
-            log(f"[persistencia] Upstash GET fallÃ³ ({type(e).__name__}); uso archivo")
+            log(f"[persistencia] Upstash GET falló ({type(e).__name__}); uso archivo")
     ruta = os.path.join(DATA_DIR, nombre)
     if os.path.exists(ruta):
         try:
@@ -291,7 +286,7 @@ def guardar_json(nombre, datos):
             _upstash(["SET", f"radar:{nombre}", texto])
             return True
         except Exception as e:
-            log(f"[persistencia] Upstash SET fallÃ³ ({type(e).__name__}); uso archivo")
+            log(f"[persistencia] Upstash SET falló ({type(e).__name__}); uso archivo")
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         ruta = os.path.join(DATA_DIR, nombre)
@@ -357,14 +352,9 @@ class RegistroVistos:
 
 
 # ---------------------------------------------------------------------------
-# PRESUPUESTO DIARIO DE REQUESTS (APIs con cuota, p. ej. API-Sports 100/dÃ­a)
+# PRESUPUESTO DIARIO DE REQUESTS (APIs con cuota, p. ej. API-Sports 100/día)
 # ---------------------------------------------------------------------------
 class PresupuestoDiario:
-    """
-    Cuenta los requests gastados en el dÃ­a (UTC, igual que el reinicio de API-Sports) y
-    los persiste, asÃ­ un reinicio/deploy no "olvida" lo gastado. Nunca deja gastar la reserva.
-    """
-
     def __init__(self, nombre, limite, reserva=8):
         self.nombre = nombre
         self.limite = max(1, int(limite))
@@ -398,7 +388,6 @@ class PresupuestoDiario:
         return self.restantes() >= n
 
     def registrar(self, n=1, restantes_reales=None):
-        """Suma n requests. Si la API informÃ³ cuÃ¡ntos le quedan, se corrige con ese dato."""
         self._rotar()
         self.usadas += n
         if restantes_reales is not None:
@@ -416,24 +405,13 @@ class PresupuestoDiario:
 
 
 class PresupuestoMultiple:
-    """
-    Presupuesto de requests/crÃ©ditos con tres ventanas (dÃ­a, semana ISO y mes, todo en UTC) y ritmo parejo.
-
-    Cada pedido debe pasar los tres topes a la vez:
-      - diario: tope duro por dÃ­a (opcional);
-      - semanal: tope duro por semana (por defecto, la parte proporcional del mes);
-      - mensual menos reserva: lo que queda del mes se reparte en los dÃ­as que faltan
-        (`ritmo`), asÃ­ el cupo del mes no se agota en unos pocos dÃ­as.
-    El estado se persiste (Upstash o archivo), por lo que un reinicio o deploy no "olvida" lo gastado.
-    """
-
     def __init__(self, nombre, mensual, semanal=None, diario=None, reserva_mensual=0):
         self.nombre = nombre
         self.mensual = max(1, int(mensual))
         self.reserva = max(0, int(reserva_mensual))
         self.semanal = max(1, int(semanal)) if semanal else max(1, -(-self.mensual * 7 // 31))
         self.diario = max(1, int(diario)) if diario else None
-        self.agotado = {"dia": None, "mes": None}  # periodo en el que la API dijo "sin cuota"
+        self.agotado = {"dia": None, "mes": None}
         self._lock = threading.RLock()
         crudo = cargar_json(f"presupuesto_{nombre}_multi.json", {})
         self.claves = self._claves()
@@ -480,7 +458,6 @@ class PresupuestoMultiple:
 
     @property
     def usadas(self):
-        """Requests gastados hoy (compatibilidad con los logs y tests existentes)."""
         with self._lock:
             self._rotar()
             return self.d
@@ -490,7 +467,6 @@ class PresupuestoMultiple:
         return self.diario or self.mensual
 
     def permitido_ahora(self):
-        """CuÃ¡ntas unidades se pueden gastar todavÃ­a hoy sin romper ninguna ventana ni el ritmo."""
         with self._lock:
             self._rotar()
             if self.agotado["dia"] == self.claves["dia"] or self.agotado["mes"] == self.claves["mes"]:
@@ -498,9 +474,7 @@ class PresupuestoMultiple:
             disponible_mes = self.mensual - self.reserva - self.m
             if disponible_mes <= 0:
                 return 0
-            # Cupo de HOY = (lo que quedaba al empezar el dÃ­a) / (dÃ­as que faltan, hoy incluido).
             ritmo_hoy = -(-(disponible_mes + self.d) // self._dias_restantes_mes())
-            # El "recupero" de dÃ­as con poco gasto tiene techo: nunca mÃ¡s de 1.5 veces el ritmo parejo del mes.
             parejo = -(-(self.mensual - self.reserva) // self._dias_del_mes())
             ritmo_hoy = min(ritmo_hoy, -(-parejo * 3 // 2))
             topes = [ritmo_hoy - self.d, self.semanal - self.s, disponible_mes]
@@ -550,7 +524,8 @@ def normalizar(texto):
 
 _PALABRAS_RUIDO = {
     "fc", "cf", "sc", "ac", "afc", "club", "women", "womens", "woman", "ladies",
-    "fem", "femenino", "femenina", "femenil", "feminin", "damen", "frauen",
+    "fem", "femenino", "femenina", "femenil", "femeni", "feminino", "feminina",
+    "feminin", "feminine", "femminile", "damen", "frauen",
     "del", "los", "las", "cd", "ud", "u19", "u20", "u21", "u23", "sub",
 }
 
@@ -567,26 +542,18 @@ def nombres_coinciden(a, b):
 
 
 # ---------------------------------------------------------------------------
-# FILTRO FEMENINO COMPARTIDO (todas las fuentes usan el mismo)
+# FILTRO FEMENINO COMPARTIDO
 # ---------------------------------------------------------------------------
-# Evidencia POSITIVA de torneo/equipo femenino. El texto se normaliza antes (sin tildes ni signos),
-# asÃ­ "Division 1 FÃ©minine", "Frauen-Bundesliga" o "Liga MX Femenil" quedan cubiertos.
 _RE_FEM = re.compile(
     r"\b(women|womens|woman|wom|female|femenino|femenina|femenil|femeni|feminino|feminina|"
     r"feminin|feminine|femminile|fem|frauen|damen|dames|ladies|vrouwen|kvinde\w*|kvinnor|"
     r"damallsvenskan|toppserien|wta|wnba|wnbl|pwhl|aflw|nrlw|wbbl|nwsl|wsl|itf w|we league|liga f|"
     r"w\s?(15|25|35|50|60|75|80|100))\b"
 )
-_RE_EQUIPO_W = re.compile(r"\bw$")  # "Arsenal W", "Barcelona (W)"
+_RE_EQUIPO_W = re.compile(r"\bw$")
 
 
 def es_femenino(torneo="", local="", visita=""):
-    """
-    True si hay evidencia positiva de que el partido es femenino.
-    Antes se descartaba primero por palabras "masculinas" (bundesliga, serie a, liga mx...),
-    lo que eliminaba justo ligas femeninas como "Frauen-Bundesliga", "Serie A Femminile" o
-    "Liga MX Femenil". Ahora manda la evidencia femenina.
-    """
     if _RE_FEM.search(normalizar(torneo)):
         return True
     for equipo in (local, visita):
@@ -597,48 +564,28 @@ def es_femenino(torneo="", local="", visita=""):
 
 
 def firma_equipo(nombre):
-    """Firma estable de un equipo/jugadora: tokens significativos ordenados."""
     toks = sorted(tokens_significativos(nombre))
     return "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
 
 
 def firma_partido(local, visita):
-    """Firma del cruce sin importar quiÃ©n figura de local en cada proveedor."""
     a, b = sorted((firma_equipo(local), firma_equipo(visita)))
     return f"{a}|{b}"
 
 
 def clave_partido(local, visita, start_ts):
-    """
-    Clave estable para no alertar dos veces el mismo partido que llega de dos fuentes distintas
-    (ESPN y API-Sports nombran distinto: se usan los tokens significativos ordenados).
-    """
-    def firma(nombre):
-        toks = sorted(tokens_significativos(nombre))
-        return "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
-
     dia = ts_a_arg(start_ts).strftime("%Y%m%d") if start_ts else "sinfecha"
-    return f"{firma(local)}|{firma(visita)}|{dia}"
+    return f"{firma_equipo(local)}|{firma_equipo(visita)}|{dia}"
 
 
 # ---------------------------------------------------------------------------
-# HISTORIAL, H2H Y TABLA UNIFICADOS (prueban varias fuentes en orden)
+# HISTORIAL, H2H Y TABLA UNIFICADOS
 # ---------------------------------------------------------------------------
-MIN_HISTORIAL_UTIL = 4  # el motor necesita al menos 4 partidos recientes para puntuar la forma
+MIN_HISTORIAL_UTIL = 4
 
 
 def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuente_oddspapi,
                             fuente_api_football, fuente_thesportsdb=None, modo="todo"):
-    """
-    Historial de un equipo (`lado` = "local" o "visita") en formato interno, o [].
-    Orden (se corta apenas una fuente da al menos MIN_HISTORIAL_UTIL partidos; si ninguna llega,
-    se devuelve el historial mÃ¡s largo encontrado):
-      1) la fuente de la que vino el evento (Highlightly, API-Sports, OddsPapi, TheSportsDB o ESPN);
-      2) TheSportsDB buscando el equipo por nombre (gratis, sin cuota diaria);
-      3) Highlightly buscando el equipo por nombre (consume cuota).
-    En los puntos 2 y 3 los ids se reescriben a los del evento.
-    `modo` = "propia" (solo el punto 1), "nombre" (solo los puntos 2 y 3) o "todo".
-    """
     fuente = evento.get("fuente")
     propias = {"espn": fuente_espn, "api_sports": fuente_api_football, "highlightly": fuente_highlightly,
                "oddspapi": fuente_oddspapi, "thesportsdb": fuente_thesportsdb}
@@ -658,7 +605,7 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
             if suficiente(modulo.historial_equipo(evento, lado)):
                 return mejor
         except Exception as e:
-            log(f"[historial] {fuente} fallÃ³ para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] {fuente} falló para {evento.get('id')}: {type(e).__name__}")
 
     por_nombre = modo in ("nombre", "todo")
     if por_nombre and fuente != "thesportsdb" and fuente_thesportsdb and equipo.get("nombre"):
@@ -668,7 +615,7 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
                         equipo["nombre"], deporte, limite=8, id_interno=equipo.get("id"))):
                     return mejor
         except Exception as e:
-            log(f"[historial] TheSportsDB fallÃ³ para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] TheSportsDB falló para {evento.get('id')}: {type(e).__name__}")
 
     if por_nombre and fuente != "highlightly" and fuente_highlightly and fuente_highlightly.disponible():
         try:
@@ -677,34 +624,47 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
                         equipo["nombre"], deporte, limite=6, id_interno=equipo.get("id"))):
                     return mejor
         except Exception as e:
-            log(f"[historial] Highlightly fallÃ³ para {evento.get('id')}: {type(e).__name__}")
+            log(f"[historial] Highlightly falló para {evento.get('id')}: {type(e).__name__}")
 
     return mejor
 
 
-def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita):
+def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita, libro_resultados=None):
     """
-    H2H entre local y visita en formato interno, o []. Orden:
-    1) los cruces que ya estÃ¡n en el historial del local;
-    2) Highlightly (por ids propios si el evento viene de ahÃ­, si no por nombre; ids reescritos al evento);
-    3) OddsPapi (solo eventos de OddsPapi y con ODDSPAPI_PROFUNDIDAD=1).
+    H2H entre local y visita en formato interno, o [].
+    Orden:
+    1) Los cruces que ya están en el historial del local;
+    2) Cruces acumulados en el libro de resultados;
+    3) Highlightly (por ids propios o por nombre);
+    4) OddsPapi.
     """
-    h2h_local = [p for p in hist_local if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
+    h2h_local = [p for p in (hist_local or []) if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
     if h2h_local:
         return h2h_local
 
+    loc, vis = evento.get("local") or {}, evento.get("visita") or {}
+    nom_loc, nom_vis = loc.get("nombre", ""), vis.get("nombre", "")
+
+    # Búsqueda en libro_resultados por nombre si existe
+    if libro_resultados and nom_loc and nom_vis:
+        try:
+            h2h_libro = libro_resultados.h2h_equipos(evento.get("deporte", "Soccer"), nom_loc, nom_vis, loc.get("id"), vis.get("id"))
+            if h2h_libro:
+                return h2h_libro
+        except Exception as e:
+            log(f"[h2h] libro_resultados fallo: {type(e).__name__}")
+
     if fuente_highlightly and fuente_highlightly.disponible():
         try:
-            loc, vis = evento["local"], evento["visita"]
             ids_hl = (loc["id"], vis["id"]) if evento.get("fuente") == "highlightly" else None
             h2h = fuente_highlightly.obtener_h2h(
-                loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"),
-                id_local=loc["id"], id_visita=vis["id"], ids_hl=ids_hl,
+                nom_loc, nom_vis, evento.get("deporte", "Soccer"),
+                id_local=loc.get("id"), id_visita=vis.get("id"), ids_hl=ids_hl,
             )
             if h2h:
                 return h2h
         except Exception as e:
-            log(f"[h2h] Highlightly fallÃ³: {type(e).__name__}")
+            log(f"[h2h] Highlightly falló: {type(e).__name__}")
 
     if fuente_oddspapi and fuente_oddspapi.disponible():
         try:
@@ -712,16 +672,12 @@ def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuent
             if h2h:
                 return h2h
         except Exception as e:
-            log(f"[h2h] OddsPapi fallÃ³: {type(e).__name__}")
+            log(f"[h2h] OddsPapi falló: {type(e).__name__}")
 
     return []
 
 
 def tabla_desde_fuentes(evento, fuente_highlightly):
-    """
-    Tabla de posiciones de la liga del partido: devuelve ({id_local: fila, id_visita: fila}, n_equipos)
-    con los ids del EVENTO, o (None, 0). Solo Highlightly tiene tablas (OddsPapi no tiene ese endpoint).
-    """
     if not (fuente_highlightly and fuente_highlightly.disponible()):
         return None, 0
     try:
@@ -731,7 +687,7 @@ def tabla_desde_fuentes(evento, fuente_highlightly):
             loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"), ids_hl=ids_hl
         )
     except Exception as e:
-        log(f"[tabla] Highlightly fallÃ³: {type(e).__name__}")
+        log(f"[tabla] Highlightly falló: {type(e).__name__}")
         return None, 0
     if not res:
         return None, 0

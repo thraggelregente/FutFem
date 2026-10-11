@@ -1,11 +1,11 @@
-﻿"""Radar de asimetrÃ­as deportivas exclusivamente femeninas.
+"""Radar de asimetrías deportivas exclusivamente femeninas.
 
 El sistema no consulta, almacena ni muestra cuotas, bookmakers ni probabilidades
-implÃ­citas. Usa resultados recientes, rankings disponibles, H2H, tablas y calendario.
+implícitas. Usa resultados recientes, rankings disponibles, H2H, tablas y calendario.
 
-Fuentes de calendario (sin que ninguna domine): Highlightly, API-Sports, OpenLigaDB, TheSportsDB,
+Fuentes de calendario: Highlightly, API-Sports, OpenLigaDB, TheSportsDB,
 The Odds API (solo fixtures) y OddsPapi (solo fixtures). ESPN queda como respaldo de menor prioridad
-y como Ãºnica fuente de ranking WTA para tenis.
+y como única fuente de ranking WTA para tenis.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import utilidades as U
 
 
 # ---------------------------------------------------------------------------
-# HTTP de salud para Render. Un ping entrante no ejecuta ni fuerza un barrido.
+# HTTP de salud para Render.
 # ---------------------------------------------------------------------------
 ESTADO = {
     "inicio": time.time(),
@@ -91,7 +91,7 @@ Thread(target=iniciar_servidor_web, daemon=True, name="health-server").start()
 
 
 # ---------------------------------------------------------------------------
-# ConfiguraciÃ³n e importaciÃ³n defensiva de fuentes
+# Configuración e importación defensiva de fuentes
 # ---------------------------------------------------------------------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
@@ -101,10 +101,10 @@ MAX_ANALISIS_POR_CICLO = max(1, int(os.environ.get("MAX_ANALISIS_POR_CICLO", "10
 HORAS_VENTANA_PREVIA = max(1, int(os.environ.get("HORAS_VENTANA_PREVIA", "24")))
 ESPN_ACTIVO = os.environ.get("ESPN_ACTIVO", "1").strip().lower() not in {"0", "false", "no", "off"}
 ARCHIVO_ALERTADOS = "alertas_enviadas.json"
-# Eventos sin historial en ninguna fuente: no se reintentan en cada ciclo (acaparaban el cupo).
+ARCHIVO_ENFRIAMIENTO = "enfriamiento_sin_datos.json"
+
 ENFRIAMIENTO_SIN_DATOS_MIN = max(0, int(os.environ.get("ENFRIAMIENTO_SIN_DATOS_MIN", "60")))
 ENFRIAMIENTO_MAX_MIN = max(ENFRIAMIENTO_SIN_DATOS_MIN, int(os.environ.get("ENFRIAMIENTO_MAX_MIN", "360")))
-# Tope de eventos "sin historial propio" que gastan bÃºsquedas por nombre en un mismo ciclo.
 MAX_BUSQUEDAS_POR_NOMBRE = max(0, int(os.environ.get("MAX_BUSQUEDAS_POR_NOMBRE", "15")))
 DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby"]
 
@@ -129,32 +129,58 @@ fuente_theoddsapi = _importar("fuente_theoddsapi")
 libro_resultados = _importar("libro_resultados")
 tenis_contexto = _importar("tenis_contexto")
 
-# Solo se conserva el estado de alertas efectivamente enviadas. Las detecciones
-# sin evidencia suficiente o sin mismatch NO quedan bloqueadas para ciclos futuros.
 registro = U.RegistroVistos(ARCHIVO_ALERTADOS, dias_retencion=3)
 _ultimo_aviso_ciego = 0.0
 
+# Persistencia duradera de enfriamiento (para que sobrevivia reinicios de Render)
+def _cargar_enfriamiento() -> dict[str, tuple[float, int]]:
+    crudo = U.cargar_json(ARCHIVO_ENFRIAMIENTO, {})
+    if not isinstance(crudo, dict):
+        return {}
+    ahora_ts = time.time()
+    limpio = {}
+    for k, v in crudo.items():
+        if isinstance(v, (list, tuple)) and len(v) >= 2:
+            try:
+                t_exp, fallos = float(v[0]), int(v[1])
+                if t_exp > ahora_ts:
+                    limpio[str(k)] = (t_exp, fallos)
+            except (ValueError, TypeError):
+                continue
+    return limpio
+
+
+def _guardar_enfriamiento(enf: dict[str, tuple[float, int]]) -> None:
+    ahora_ts = time.time()
+    payload = {k: [round(v[0], 1), v[1]] for k, v in enf.items() if v[0] > ahora_ts}
+    U.guardar_json(ARCHIVO_ENFRIAMIENTO, payload)
+
+
+_enfriamiento: dict[str, tuple[float, int]] = _cargar_enfriamiento()
+_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn"}
+
 
 # ---------------------------------------------------------------------------
-# Telegram: salida estrictamente deportiva; nunca incluye lÃ­neas de mercado.
+# Telegram: salida estrictamente deportiva
 # ---------------------------------------------------------------------------
 def _sin_html(texto: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", texto))
 
 
 def _recortar_html(texto: str, limite: int = 4000) -> str:
-    """Recorta en un salto de lÃ­nea para no dejar una etiqueta HTML abierta a mitad de mensaje."""
     if len(texto) <= limite:
         return texto
     corte = texto[:limite]
     ultimo_salto = corte.rfind("\n")
-    return (corte[:ultimo_salto] if ultimo_salto > 0 else corte) + "\nâ€¦"
+    return (corte[:ultimo_salto] if ultimo_salto > 0 else corte) + "\n…"
 
 
 def _post_telegram(url: str, payload: dict[str, Any], destino: str):
-    """Devuelve (status_http | None, segundos_de_espera_si_429)."""
     try:
-        respuesta = requests.post(url, json=payload, timeout=12)
+        # Enviar con charset UTF-8 explícito para evitar mojibake / símbolos raros
+        headers = {"Content-Type": "application/json; charset=utf-8"}
+        cuerpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        respuesta = requests.post(url, data=cuerpo, headers=headers, timeout=12)
     except requests.RequestException as exc:
         U.log(f"[telegram] error de red ({type(exc).__name__}) para chat {destino}")
         return None, 0
@@ -201,30 +227,29 @@ def enviar_telegram(mensaje_html: str) -> bool:
                 break
             U.log(f"[telegram] HTTP {status} para chat {destino}; modo={modo}")
             if status != 400:
-                break  # solo un error de formato (400) justifica reintentar como texto plano
+                break
         entregado = entregado or entregado_destino
     return entregado
 
 
 def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, favorito, confianza="Media",
                   fuentes=None):
-    """EnvÃ­a una alerta basada Ãºnicamente en datos y contexto deportivo."""
     if motor_mismatches is None:
         return False
     nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
     esc = html.escape
-    detalles_txt = "\n".join(f"â€¢ {esc(str(d))}" for d in list(alertas_base)[:10])
+    detalles_txt = "\n".join(f"• {esc(str(d))}" for d in list(alertas_base)[:10])
     mensaje = (
-        "ðŸš¨ <b>MISMATCH DEPORTIVO FEMENINO â€” ASIMETRÃA</b>\n\n"
-        f"ðŸ… <b>Deporte:</b> {esc(str(deporte))}\n"
-        f"ðŸ† <b>CompeticiÃ³n:</b> {esc(str(torneo))}\n"
-        f"âš”ï¸ <b>Encuentro:</b> {esc(str(nom_loc))} vs {esc(str(nom_vis))}\n"
-        f"ðŸ“Œ <b>Favorito:</b> {esc(str(nom_fav))} (ventaja deportiva)\n"
-        f"ðŸ•’ <b>Horario:</b> {esc(str(hora_txt))}\n"
-        f"ðŸ“¡ <b>Fuentes:</b> {esc(', '.join(str(f) for f in (fuentes or [])) or 'sin dato')}\n\n"
-        f"ðŸ“Š <b>Evidencia:</b>\n{detalles_txt or 'Sin detalle adicional.'}\n\n"
-        f"ðŸ”Ž <b>Confianza del anÃ¡lisis:</b> {esc(str(confianza))}\n"
-        "<i>EstimaciÃ³n basada en datos deportivos; no se usan cuotas ni mercados.</i>"
+        "🚨 <b>MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA</b>\n\n"
+        f"🏅 <b>Deporte:</b> {esc(str(deporte))}\n"
+        f"🏆 <b>Competición:</b> {esc(str(torneo))}\n"
+        f"⚔️ <b>Encuentro:</b> {esc(str(nom_loc))} vs {esc(str(nom_vis))}\n"
+        f"📌 <b>Favorito:</b> {esc(str(nom_fav))} (ventaja deportiva)\n"
+        f"🕒 <b>Horario:</b> {esc(str(hora_txt))}\n"
+        f"📡 <b>Fuentes:</b> {esc(', '.join(str(f) for f in (fuentes or [])) or 'sin dato')}\n\n"
+        f"📊 <b>Evidencia:</b>\n{detalles_txt or 'Sin detalle adicional.'}\n\n"
+        f"🔎 <b>Confianza del análisis:</b> {esc(str(confianza))}\n"
+        "<i>Estimación basada en datos deportivos; no se usan cuotas ni mercados.</i>"
     )
     entregado = enviar_telegram(mensaje)
     U.log(
@@ -235,13 +260,12 @@ def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, fav
 
 
 # ---------------------------------------------------------------------------
-# DeduplicaciÃ³n de alertas, no de anÃ¡lisis. Un evento sin mismatch se reevalÃºa.
+# Deduplicación y control de enfriamiento
 # ---------------------------------------------------------------------------
-TOLERANCIA_FECHA_S = 6 * 3600  # un mismo partido puede venir con horarios distintos segÃºn el proveedor
+TOLERANCIA_FECHA_S = 6 * 3600
 
 
 def _firma_evento(ev: dict[str, Any]) -> str:
-    """Firma del cruce, igual aunque cambien ids, orden local/visita o sufijos Women/W."""
     local = (ev.get("local") or {}).get("nombre") or ""
     visita = (ev.get("visita") or {}).get("nombre") or ""
     return U.firma_partido(local, visita) if local and visita else ""
@@ -255,7 +279,6 @@ def _inicio_evento(ev: dict[str, Any]) -> int:
 
 
 def _clave_canonica_evento(ev: dict[str, Any]) -> str:
-    """Firma estable entre proveedores aunque cambien ids, orden o sufijos Women/W."""
     firma = _firma_evento(ev)
     inicio = _inicio_evento(ev)
     if not firma or not inicio:
@@ -265,10 +288,6 @@ def _clave_canonica_evento(ev: dict[str, Any]) -> str:
 
 
 def _claves_equivalentes(ev: dict[str, Any]) -> set[str]:
-    """
-    Claves con las que pudo haberse registrado este mismo partido: el dÃ­a UTC del inicio y el de
-    +/- la tolerancia horaria (un proveedor que se equivoca unas horas no genera una alerta duplicada).
-    """
     firma = _firma_evento(ev)
     inicio = _inicio_evento(ev)
     if not firma or not inicio:
@@ -284,17 +303,13 @@ def _ya_alertado(ev: dict[str, Any]) -> bool:
     return any(registro.visto(clave) for clave in _claves_equivalentes(ev) if clave)
 
 
-_enfriamiento: dict[str, tuple[float, int]] = {}  # clave -> (reintentar_desde_ts, fallos seguidos)
-_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn"}
-
-
 def _registrar_sin_datos(clave: str, ev: dict[str, Any]) -> None:
-    """Backoff 1 h, 2 h, 4 h... (tope ENFRIAMIENTO_MAX_MIN) y nunca mÃ¡s allÃ¡ del inicio del partido."""
     if not ENFRIAMIENTO_SIN_DATOS_MIN:
         return
     fallos = _enfriamiento.get(clave, (0, 0))[1] + 1
     minutos = min(ENFRIAMIENTO_MAX_MIN, ENFRIAMIENTO_SIN_DATOS_MIN * 2 ** (fallos - 1))
     _enfriamiento[clave] = (time.time() + minutos * 60, fallos)
+    _guardar_enfriamiento(_enfriamiento)
 
 
 def _en_enfriamiento(clave: str, ahora_ts: float) -> bool:
@@ -303,13 +318,11 @@ def _en_enfriamiento(clave: str, ahora_ts: float) -> bool:
 
 
 def _tiene_historial_propio(ev: dict[str, Any]) -> bool:
-    """Tenis (ranking) o alguna fuente que sabe dar historial; OddsPapi/The Odds API solo dan calendario."""
     if ev.get("deporte") == "Tennis":
         return True
     fuentes = set(ev.get("_fuentes_detectadas") or []) | {str(ev.get("fuente") or "")}
     if fuentes & _FUENTES_CON_HISTORIAL_PROPIO:
         return True
-    # Eventos solo-calendario cuyos dos equipos ya tienen resultados acumulados en el libro.
     return bool(libro_resultados and libro_resultados.tiene_historial(ev))
 
 
@@ -350,7 +363,6 @@ def _fecha_evento_valida(ev: dict[str, Any], ahora_ts: float, st: dict[str, int]
 
 
 def _remapear_historial(historial, id_fuente, id_evento):
-    """Reescribe el ID del equipo evaluado; conserva los IDs de sus rivales para triangulaciÃ³n."""
     if id_fuente is None or id_evento is None or str(id_fuente) == str(id_evento):
         return historial
     copia = []
@@ -364,21 +376,12 @@ def _remapear_historial(historial, id_fuente, id_evento):
     return copia
 
 
-# Orden en que se consulta el historial de una fuente propia: primero las gratuitas y sin cuota
-# diaria, al final las que gastan requests de un plan con lÃ­mite.
 _COSTO_HISTORIAL = {
     "openligadb": 0, "espn": 1, "thesportsdb": 2, "oddspapi": 3, "theoddsapi": 4, "highlightly": 5, "api_sports": 6,
 }
 
 
 def _historial_equipo(ev, lado):
-    """
-    Historial reciente de un equipo, cuidando las cuotas:
-      1) historial propio de cada fuente que observÃ³ el partido (gratuitas primero);
-      2) OpenLigaDB (gratis) para fÃºtbol;
-      3) bÃºsqueda por nombre en TheSportsDB (gratis) y, por Ãºltimo, en Highlightly (con cuota).
-    Se corta apenas hay MIN_HISTORIAL_UTIL partidos; si ninguna llega, se usa el mÃ¡s largo encontrado.
-    """
     principal = ev.get(lado) or {}
     id_evento = principal.get("id")
     observaciones = sorted(
@@ -409,7 +412,7 @@ def _historial_equipo(ev, lado):
             if suficiente(_remapear_historial(historial, id_candidato, id_evento)):
                 return mejor
         except Exception as exc:
-            U.log(f"[historial] fuente {fuente or '?'} fallÃ³ para {ev.get('id')}: {type(exc).__name__}")
+            U.log(f"[historial] fuente {fuente or '?'} falló para {ev.get('id')}: {type(exc).__name__}")
         if fuente_openligadb and candidato.get("deporte") == "Soccer":
             try:
                 equipo = candidato.get(lado) or {}
@@ -422,7 +425,7 @@ def _historial_equipo(ev, lado):
             except Exception as exc:
                 U.log(f"[historial/openligadb] {type(exc).__name__} para {ev.get('id')}")
 
-    if libro_resultados:  # gratis y local: resultados acumulados de todas las fuentes
+    if libro_resultados:
         try:
             if suficiente(libro_resultados.historial_equipo(ev, lado, limite=10)):
                 return mejor
@@ -436,12 +439,11 @@ def _historial_equipo(ev, lado):
         )
         suficiente(_remapear_historial(por_nombre, id_evento, id_evento))
     except Exception as exc:
-        U.log(f"[historial] bÃºsqueda por nombre fallÃ³ para {ev.get('id')}: {type(exc).__name__}")
+        U.log(f"[historial] búsqueda por nombre falló para {ev.get('id')}: {type(exc).__name__}")
     return mejor
 
 
 def _evaluar_plantel(ev, deporte, nom_loc, nom_vis):
-    """Bajas confirmadas (ESPN /injuries). Con nombres de ESPN se infiere 0 bajas si el equipo no figura."""
     if not fuente_espn or not hasattr(fuente_espn, "lesiones_equipo"):
         return None
     try:
@@ -464,16 +466,14 @@ def _procesar_evento(ev, st, ahora_ts):
     clave = _clave_canonica_evento(ev)
     if not clave:
         st["errores"] += 1
-        U.log("[radar] evento ignorado: no tiene clave de deduplicaciÃ³n")
+        U.log("[radar] evento ignorado: no tiene clave de deduplicación")
         return False
 
     nom_loc = str((ev.get("local") or {}).get("nombre") or "").strip()
     nom_vis = str((ev.get("visita") or {}).get("nombre") or "").strip()
-    torneo = str(ev.get("torneo") or "CompeticiÃ³n sin nombre")
+    torneo = str(ev.get("torneo") or "Competición sin nombre")
     deporte = str(ev.get("deporte") or "")
 
-    # Cada fuente declara femenino_seguro solo despuÃ©s de aplicar evidencia positiva
-    # (nombre explÃ­cito o competiciÃ³n incluida en una allowlist de ligas femeninas).
     femenino = bool(ev.get("femenino_seguro")) or U.es_femenino(torneo, nom_loc, nom_vis)
     if not femenino:
         U.log(f"[filtro] rechazo por falta de evidencia femenina: {torneo} | {nom_loc} vs {nom_vis}")
@@ -483,13 +483,9 @@ def _procesar_evento(ev, st, ahora_ts):
     if not _fecha_evento_valida(ev, ahora_ts, st):
         return False
 
-    # Se suprimen solo alertas que ya llegaron a Telegram. No se descartan los
-    # partidos previamente analizados sin mismatch: sus datos pueden cambiar.
     if _ya_alertado(ev):
         st["ya_vistos"] += 1
         return False
-
-    estado = "PRE"
 
     if deporte == "Tennis":
         local = ev.get("local") or {}
@@ -557,8 +553,10 @@ def _procesar_evento(ev, st, ahora_ts):
     perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc, deporte)
     perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis, deporte)
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
+    
+    # H2H cruzando observaciones y libro de resultados
     h2h_raw = U.h2h_desde_fuentes(
-        ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis
+        ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis, libro_resultados=libro_resultados
     )
     h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
     datos_extra = {
@@ -610,7 +608,7 @@ def _procesar_evento(ev, st, ahora_ts):
             resultado.get("alertas") or [],
             favorito,
             f"{resultado.get('confianza', 'Media')} "
-            f"({resultado.get('grupos_independientes', 1)} grupo(s) de seÃ±ales independientes)",
+            f"({resultado.get('grupos_independientes', 1)} grupo(s) de señales independientes)",
             fuentes=ev.get("_fuentes_detectadas"),
         )
         st["alertas"] += 1
@@ -619,17 +617,12 @@ def _procesar_evento(ev, st, ahora_ts):
     elif resultado.get("puntaje", 0) > 0:
         U.log(f"[analisis] sin mismatch suficiente: {nom_loc} vs {nom_vis}: {resultado.get('motivo_descarte', '')}")
 
-    # IMPORTANTE: no registrar aquÃ­ los casos sin mismatch. Se vuelven a evaluar
-    # hasta que empiece el evento, salga de la ventana o se envÃ­e una alerta.
     return True
 
 
 # ---------------------------------------------------------------------------
-# AgregaciÃ³n multi-fuente: selecciÃ³n por profundidad, no por orden de respuesta.
+# Agregación multi-fuente
 # ---------------------------------------------------------------------------
-# Menor nÃºmero = mÃ¡s prioridad como fuente "principal" del evento (ids, nombres y torneo). ESPN va al
-# final: es respaldo y ranking WTA, no la base del radar (en tenis se la prioriza porque es la Ãºnica
-# con ranking oficial).
 _PRIORIDAD_FUENTE = {
     "highlightly": 0,
     "api_sports": 1,
@@ -648,14 +641,12 @@ def _prioridad_evento(ev):
     prioridad = _PRIORIDAD_FUENTE.get(fuente, 99)
     local = ev.get("local") or {}
     visita = ev.get("visita") or {}
-    # Se prefieren datos de ranking cuando la comparaciÃ³n es individual.
     if ev.get("deporte") == "Tennis" and (local.get("ranking") or visita.get("ranking")):
         prioridad -= 2
     return prioridad
 
 
 def _coincide_con_candidato(candidato, firma, inicio):
-    """Mismo cruce y mismo dÃ­a UTC, o con horarios a menos de TOLERANCIA_FECHA_S de diferencia."""
     if _firma_evento(candidato) != firma:
         return False
     inicio_c = _inicio_evento(candidato)
@@ -685,7 +676,7 @@ def _recolectar_eventos(resumen):
             continue
         try:
             if hasattr(modulo, "disponible") and not modulo.disponible():
-                U.log(f"[{nombre}] omitida: falta clave o la fuente estÃ¡ deshabilitada")
+                U.log(f"[{nombre}] omitida: falta clave o la fuente está deshabilitada")
                 continue
         except Exception as exc:
             U.log(f"[{nombre}] error comprobando disponibilidad: {type(exc).__name__}")
@@ -755,7 +746,6 @@ def _recolectar_eventos(resumen):
 
 
 def _log_aporte_por_fuente(candidatos):
-    """Deja a la vista cuÃ¡nto aporta cada proveedor (y que ESPN no sea la base del radar)."""
     aportes = defaultdict(lambda: {"detectados": 0, "exclusivos": 0, "principal": 0})
     for ev in candidatos.values():
         detectadas = ev.get("_fuentes_detectadas", [])
@@ -765,7 +755,7 @@ def _log_aporte_por_fuente(candidatos):
             aportes[detectadas[0]]["exclusivos"] += 1
         aportes[str(ev.get("fuente") or "?")]["principal"] += 1
     total_obs = sum(a["detectados"] for a in aportes.values())
-    U.log(f"[agregador] {total_obs} observaciones de fuentes; {len(candidatos)} eventos Ãºnicos")
+    U.log(f"[agregador] {total_obs} observaciones de fuentes; {len(candidatos)} eventos únicos")
     if aportes:
         detalle = ", ".join(
             f"{n}={a['detectados']}/{a['exclusivos']}/{a['principal']}" for n, a in sorted(aportes.items())
@@ -780,7 +770,7 @@ def _imprimir_resumen(resumen):
     for etapa, st in resumen.items():
         U.log(
             f"{etapa}: {st['eventos']} eventos capturados -> {st['femeninos']} femeninos validados -> "
-            f"{st['analizados']} anÃ¡lisis completos -> {st['alertas']} alertas generadas "
+            f"{st['analizados']} análisis completos -> {st['alertas']} alertas generadas "
             f"(alertas ya enviadas {st['ya_vistos']}, sin datos {st['sin_datos']}, en enfriamiento {st['enfriados']}, "
             f"no vigentes {st['no_vigentes']}, fuera de ventana {st['lejanos']}, errores {st['errores']})"
         )
@@ -799,17 +789,17 @@ def _avisar_si_esta_ciego(resumen):
     _ultimo_aviso_ciego = time.time()
     detalle = ", ".join(f"{fuente}: {dict(codigos)}" for fuente, codigos in U.ESTADISTICAS.items())
     enviar_telegram(
-        "âš ï¸ <b>El radar no pudo obtener ninguna respuesta HTTP 200.</b>\n"
+        "⚠️ <b>El radar no pudo obtener ninguna respuesta HTTP 200.</b>\n"
         f"Respuestas por fuente: {html.escape(detalle[:700])}\n"
-        "RevisÃ¡ claves, restricciones del plan o disponibilidad del proveedor."
+        "Revisá claves, restricciones del plan o disponibilidad del proveedor."
     )
 
 
 def ejecutar_barrido_radar():
     U.reiniciar_estadisticas()
-    U.log("=== Barrido de asimetrÃ­as deportivas femeninas ===")
+    U.log("=== Barrido de asimetrías deportivas femeninas ===")
     if motor_mismatches is None:
-        U.log("[fatal] motor_mismatches no estÃ¡ disponible; se omite este barrido")
+        U.log("[fatal] motor_mismatches no está disponible; se omite este barrido")
         return
 
     registro.podar()
@@ -817,8 +807,6 @@ def ejecutar_barrido_radar():
     ahora_ts = time.time()
     t_inicio = time.monotonic()
     eventos = _recolectar_eventos(resumen)
-    # Primero lo que se puede analizar (ranking o historial propio), despuÃ©s lo que solo trae calendario;
-    # dentro de cada grupo, por horario.
     eventos.sort(key=lambda ev: (0 if _tiene_historial_propio(ev) else 1, ev.get("startTimestamp", 0)))
 
     intentos = 0
@@ -826,13 +814,13 @@ def ejecutar_barrido_radar():
     omitidos_busqueda = 0
     for ev in eventos:
         if intentos >= MAX_ANALISIS_POR_CICLO:
-            U.log(f"[radar] alcanzado el lÃ­mite de {MAX_ANALISIS_POR_CICLO} eventos por ciclo")
+            U.log(f"[radar] alcanzado el límite de {MAX_ANALISIS_POR_CICLO} eventos por ciclo")
             break
         st = resumen.setdefault(f"{ev.get('fuente', 'ext')}:{ev.get('deporte', 'Multi')}", _nuevo_stat())
         clave_ev = _clave_canonica_evento(ev)
         if _en_enfriamiento(clave_ev, ahora_ts):
             st["enfriados"] += 1
-            continue  # sin gastar cupo ni requests
+            continue
         if not _tiene_historial_propio(ev):
             if busquedas_por_nombre >= MAX_BUSQUEDAS_POR_NOMBRE:
                 omitidos_busqueda += 1
@@ -843,7 +831,6 @@ def ejecutar_barrido_radar():
         try:
             _procesar_evento(ev, st, ahora_ts)
             if st["lejanos"] + st["no_vigentes"] + st["ya_vistos"] > descartes_antes:
-                # Descarte barato (fuera de ventana, ya empezÃ³ o ya alertado): no consume cupo de anÃ¡lisis.
                 intentos -= 1
                 if not _tiene_historial_propio(ev):
                     busquedas_por_nombre -= 1
@@ -853,12 +840,13 @@ def ejecutar_barrido_radar():
         registro.guardar()
 
     registro.guardar()
+    _guardar_enfriamiento(_enfriamiento)
     if libro_resultados:
         libro_resultados.guardar()
         ESTADO["libro_resultados"] = libro_resultados.total()
     if omitidos_busqueda:
-        U.log(f"[radar] {omitidos_busqueda} eventos solo-calendario esperan al prÃ³ximo ciclo "
-              f"(tope de {MAX_BUSQUEDAS_POR_NOMBRE} bÃºsquedas por nombre por ciclo)")
+        U.log(f"[radar] {omitidos_busqueda} eventos solo-calendario esperan al próximo ciclo "
+              f"(tope de {MAX_BUSQUEDAS_POR_NOMBRE} búsquedas por nombre por ciclo)")
     ESTADO["barridos"] += 1
     ESTADO["ultimo_barrido_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ESTADO["ultimo_barrido_segundos"] = round(time.monotonic() - t_inicio, 1)
@@ -889,14 +877,14 @@ def _fuentes_activas():
 def main():
     U.log("Radar Femenino: servicio iniciado")
     U.log(f"Persistencia de estado: {U.modo_persistencia()}")
-    U.log(f"Intervalo={INTERVALO_REVISION}s; mÃ¡ximo de eventos/ciclo={MAX_ANALISIS_POR_CICLO}")
+    U.log(f"Intervalo={INTERVALO_REVISION}s; máximo de eventos/ciclo={MAX_ANALISIS_POR_CICLO}")
     fuentes = _fuentes_activas()
     ESTADO["fuentes"] = fuentes
     U.log(f"Fuentes configuradas: {', '.join(fuentes) or 'ninguna'}")
     if not U.persistencia_es_duradera():
-        U.log("[persistencia] ADVERTENCIA: el filesystem local de Render es efÃ­mero; configurÃ¡ Upstash para estado duradero")
+        U.log("[persistencia] ADVERTENCIA: el filesystem local de Render es efímero; configurá Upstash para estado duradero")
     enviar_telegram(
-        "ðŸ¤– <b>Radar femenino activo.</b>\n"
+        "🤖 <b>Radar femenino activo.</b>\n"
         f"Fuentes: {html.escape(', '.join(fuentes) or 'ninguna')}\n"
         f"Persistencia: {html.escape(U.modo_persistencia())}\n"
         "Modo: datos deportivos y calendario; cuotas deshabilitadas."
