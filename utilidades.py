@@ -60,7 +60,9 @@ def formatear_hora_arg(ts):
 
 
 _RE_SECRETO = re.compile(
-    r"(?i)(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'"<>]+)"
+_RE_SECRETO = re.compile(
+    r"(?i)\b(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'\"<>]+)"
+)
 )
 _RE_BOT_TELEGRAM = re.compile(r"/bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
