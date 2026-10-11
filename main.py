@@ -36,6 +36,7 @@ ESTADO = {
     "ultimo_barrido_segundos": None,
     "eventos_unicos": 0,
     "fuentes": [],
+    "libro_resultados": 0,
 }
 
 
@@ -53,6 +54,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
             "last_sweep_seconds": ESTADO["ultimo_barrido_segundos"],
             "unique_events_last_sweep": ESTADO["eventos_unicos"],
             "sources": list(ESTADO["fuentes"]),
+            "results_ledger": ESTADO["libro_resultados"],
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
@@ -124,6 +126,8 @@ fuente_highlightly = _importar("fuente_highlightly")
 fuente_oddspapi = _importar("fuente_oddspapi")
 fuente_openligadb = _importar("fuente_openligadb")
 fuente_theoddsapi = _importar("fuente_theoddsapi")
+libro_resultados = _importar("libro_resultados")
+tenis_contexto = _importar("tenis_contexto")
 
 # Solo se conserva el estado de alertas efectivamente enviadas. Las detecciones
 # sin evidencia suficiente o sin mismatch NO quedan bloqueadas para ciclos futuros.
@@ -303,7 +307,10 @@ def _tiene_historial_propio(ev: dict[str, Any]) -> bool:
     if ev.get("deporte") == "Tennis":
         return True
     fuentes = set(ev.get("_fuentes_detectadas") or []) | {str(ev.get("fuente") or "")}
-    return bool(fuentes & _FUENTES_CON_HISTORIAL_PROPIO)
+    if fuentes & _FUENTES_CON_HISTORIAL_PROPIO:
+        return True
+    # Eventos solo-calendario cuyos dos equipos ya tienen resultados acumulados en el libro.
+    return bool(libro_resultados and libro_resultados.tiene_historial(ev))
 
 
 def _nuevo_stat():
@@ -415,6 +422,13 @@ def _historial_equipo(ev, lado):
             except Exception as exc:
                 U.log(f"[historial/openligadb] {type(exc).__name__} para {ev.get('id')}")
 
+    if libro_resultados:  # gratis y local: resultados acumulados de todas las fuentes
+        try:
+            if suficiente(libro_resultados.historial_equipo(ev, lado, limite=10)):
+                return mejor
+        except Exception as exc:
+            U.log(f"[historial/libro] {type(exc).__name__} para {ev.get('id')}")
+
     try:
         por_nombre = U.historial_desde_fuentes(
             ev, lado, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football,
@@ -424,6 +438,26 @@ def _historial_equipo(ev, lado):
     except Exception as exc:
         U.log(f"[historial] bÃºsqueda por nombre fallÃ³ para {ev.get('id')}: {type(exc).__name__}")
     return mejor
+
+
+def _evaluar_plantel(ev, deporte, nom_loc, nom_vis):
+    """Bajas confirmadas (ESPN /injuries). Con nombres de ESPN se infiere 0 bajas si el equipo no figura."""
+    if not fuente_espn or not hasattr(fuente_espn, "lesiones_equipo"):
+        return None
+    try:
+        obs_espn = next((o for o in ev.get("_observaciones") or [] if o.get("fuente") == "espn"), None)
+        if obs_espn:
+            nl, nv, inferir = obs_espn["local"]["nombre"], obs_espn["visita"]["nombre"], True
+        else:
+            nl, nv, inferir = nom_loc, nom_vis, False
+        return motor_mismatches.evaluar_plantel(
+            fuente_espn.lesiones_equipo(deporte, nl, inferir_cero=inferir),
+            fuente_espn.lesiones_equipo(deporte, nv, inferir_cero=inferir),
+            deporte,
+        )
+    except Exception as exc:
+        U.log(f"[plantel] {type(exc).__name__} para {ev.get('id')}")
+        return None
 
 
 def _procesar_evento(ev, st, ahora_ts):
@@ -477,7 +511,21 @@ def _procesar_evento(ev, st, ahora_ts):
             visita.get("ranking"),
             fuera_local=bool(local.get("fuera_ranking", False)),
             fuera_visita=bool(visita.get("fuera_ranking", False)),
+            corte_ranking=local.get("ranking_corte") or visita.get("ranking_corte"),
         )
+        U.log(f"[tenis] {nom_loc} (#{local.get('ranking') or 'fuera'}) vs {nom_vis} (#{visita.get('ranking') or 'fuera'}) "
+              f"[corte top {local.get('ranking_corte') or visita.get('ranking_corte') or '?'}] -> {pts} pts")
+        detalles_tenis = [detalle]
+        if hay and tenis_contexto:
+            nom_fav, nom_riv = (nom_loc, nom_vis) if favorito == motor_mismatches.LOCAL else (nom_vis, nom_loc)
+            try:
+                ctx = tenis_contexto.evaluar_contexto(nom_fav, nom_riv, torneo)
+            except Exception as exc:
+                U.log(f"[tenis] contexto no disponible: {type(exc).__name__}")
+                ctx = None
+            ajuste, extra = motor_mismatches.ajustar_tenis_por_contexto(favorito, ctx)
+            pts += ajuste
+            detalles_tenis.extend(extra)
         if hay and pts >= 2:
             entregado = enviar_alerta(
                 deporte,
@@ -485,7 +533,7 @@ def _procesar_evento(ev, st, ahora_ts):
                 nom_loc,
                 nom_vis,
                 str(ev.get("horario") or "A confirmar"),
-                [detalle],
+                detalles_tenis,
                 favorito,
                 "Alta" if pts >= 3 else "Media",
                 fuentes=ev.get("_fuentes_detectadas"),
@@ -506,8 +554,8 @@ def _procesar_evento(ev, st, ahora_ts):
         return False
 
     st["analizados"] += 1
-    perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc)
-    perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis)
+    perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc, deporte)
+    perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis, deporte)
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
     h2h_raw = U.h2h_desde_fuentes(
         ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis
@@ -519,6 +567,12 @@ def _procesar_evento(ev, st, ahora_ts):
         "racha_local": motor_mismatches.evaluar_momentum(forma_loc, id_loc),
         "racha_visita": motor_mismatches.evaluar_momentum(forma_vis, id_vis),
     }
+    if libro_resultados:
+        try:
+            datos_extra["elo"] = motor_mismatches.evaluar_elo(libro_resultados.consulta_elo(deporte, nom_loc, nom_vis))
+        except Exception as exc:
+            U.log(f"[elo] {type(exc).__name__} para {ev.get('id')}")
+    datos_extra["plantel"] = _evaluar_plantel(ev, deporte, nom_loc, nom_vis)
 
     def evaluar(tabla_eval):
         return motor_mismatches.evaluar_mismatch(
@@ -555,7 +609,8 @@ def _procesar_evento(ev, st, ahora_ts):
             str(ev.get("horario") or "A confirmar"),
             resultado.get("alertas") or [],
             favorito,
-            resultado.get("confianza", "Media"),
+            f"{resultado.get('confianza', 'Media')} "
+            f"({resultado.get('grupos_independientes', 1)} grupo(s) de seÃ±ales independientes)",
             fuentes=ev.get("_fuentes_detectadas"),
         )
         st["alertas"] += 1
@@ -798,6 +853,9 @@ def ejecutar_barrido_radar():
         registro.guardar()
 
     registro.guardar()
+    if libro_resultados:
+        libro_resultados.guardar()
+        ESTADO["libro_resultados"] = libro_resultados.total()
     if omitidos_busqueda:
         U.log(f"[radar] {omitidos_busqueda} eventos solo-calendario esperan al prÃ³ximo ciclo "
               f"(tope de {MAX_BUSQUEDAS_POR_NOMBRE} bÃºsquedas por nombre por ciclo)")

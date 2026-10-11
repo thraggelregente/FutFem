@@ -29,6 +29,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
+import libro_resultados as L
 import utilidades as U
 
 API_KEY = os.environ.get("HIGHLIGHTLY_API_KEY")
@@ -408,6 +409,7 @@ def _forma_cruda(deporte, equipo_id):
         return []
     partidos = [n for n in (_normalizar_partido(m) for m in _lista(data)) if n and n["pl"] is not None]
     partidos.sort(key=lambda n: n["fecha"], reverse=True)
+    L.ingestar(deporte, [_como_historico(n) for n in partidos], "highlightly")
     _cache_forma.set(clave, partidos)
     return partidos
 

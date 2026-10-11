@@ -11,6 +11,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
+import libro_resultados as L
 import utilidades as U
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports"
@@ -51,6 +52,8 @@ _cache_proximos = U.CacheTTL(max(10, int(os.environ.get("ESPN_SCOREBOARD_CACHE_M
 _cache_dia_pasado = U.CacheTTL(24 * 3600)
 _cache_historial = U.CacheTTL(6 * 3600)
 _cache_ranking = U.CacheTTL(12 * 3600)
+_cache_lesiones = U.CacheTTL(3 * 3600)
+_lesiones_sin_soporte = {}  # (sport, slug) -> timestamp hasta el cual no se reintenta
 TTL_FALLO = 5 * 60  # un error de red/HTTP se reintenta a los 5 minutos, no a las 3 horas
 
 
@@ -150,20 +153,38 @@ def _normalizar_equipos(evento, deporte, slug, nombre_liga, ahora):
     }
 
 
+_ranking_nombres = {}   # firma de nombre -> posiciÃ³n (segundo Ã­ndice por si los ids no coinciden)
+_discrepancias = set()
+
+
+def ranking_corte():
+    """Ãšltima posiciÃ³n que trae la lista de ranking de ESPN (p. ej. 150): mÃ¡s allÃ¡ solo se sabe "rank > corte"."""
+    mapa = ranking_wta()
+    return max(mapa.values()) if mapa else None
+
+
 def ranking_wta():
     hit, valor = _cache_ranking.get("wta")
     if hit:
         return valor
     data = U.get_json(f"{BASE}/tennis/wta/rankings", FUENTE, timeout=12)
     mapa = {}
+    nombres = {}
     try:
         for r in (data or {}).get("rankings", [])[0].get("ranks", []) or []:
             ath = r.get("athlete") or {}
             pos = _entero(r.get("current"))
             if ath.get("id") is not None and pos:
                 mapa[str(ath["id"])] = pos
+                nombre = ath.get("displayName") or ath.get("fullName")
+                if nombre and len(U.tokens_significativos(nombre)) >= 2:
+                    nombres[U.firma_equipo(nombre)] = pos
     except Exception:
-        mapa = {}
+        mapa, nombres = {}, {}
+    _ranking_nombres.clear()
+    _ranking_nombres.update(nombres)
+    if mapa:
+        U.log(f"[espn] ranking WTA: {len(mapa)} jugadoras (top {max(mapa.values())}); quien no figura es rank > {max(mapa.values())}")
     # Un ranking vacÃ­o (fallo de ESPN) no se cachea 12 h: dejarÃ­a al tenis ciego medio dÃ­a.
     _cache_ranking.set("wta", mapa, ttl=None if mapa else TTL_FALLO * 2)
     return mapa
@@ -176,8 +197,19 @@ def _jugadora(c, ranking):
     if not nombre or pid is None:
         return None
     pid = str(pid)
-    rk = _entero((c.get("curatedRank") or {}).get("current")) or ranking.get(pid)
-    return {"id": pid, "nombre": nombre, "ranking": rk, "fuera_ranking": bool(ranking) and rk is None}
+    # El ranking sale SOLO de la lista oficial de ESPN (por id y, si el id no figura, por nombre completo).
+    # `curatedRank` NO es el ranking WTA: en las pruebas de tu reporte mostraba #8 para una jugadora #125
+    # (es la posiciÃ³n dentro del cuadro/sembrado del torneo). Solo se guarda como semilla informativa.
+    rk = ranking.get(pid)
+    if rk is None and len(U.tokens_significativos(nombre)) >= 2:
+        rk = _ranking_nombres.get(U.firma_equipo(nombre))
+    curado = _entero((c.get("curatedRank") or {}).get("current"))
+    if rk is not None and curado is not None and curado != rk and (pid, curado) not in _discrepancias:
+        _discrepancias.add((pid, curado))
+        U.log(f"[espn/tenis] {nombre}: ranking WTA #{rk} pero curatedRank={curado} (se usa #{rk}; curatedRank es la semilla del torneo)")
+    corte = max(ranking.values()) if ranking else None
+    return {"id": pid, "nombre": nombre, "ranking": rk, "semilla": curado,
+            "fuera_ranking": bool(ranking) and rk is None, "ranking_corte": corte}
 
 
 def _eventos_tenis(slug, nombre_liga, ahora):
@@ -300,7 +332,7 @@ def _historial_liga(sport, slug):
     if hit:
         return valor
 
-    por_equipo, vistos = {}, set()
+    por_equipo, vistos, unicos = {}, set(), []
     for e in _eventos_pasados(sport, slug):
         try:
             p = _partido_terminado(e)
@@ -309,11 +341,14 @@ def _historial_liga(sport, slug):
         if not p or p["_id"] in vistos:
             continue
         vistos.add(p["_id"])
+        unicos.append(p)
         for tid in (p["id_local"], p["id_visita"]):
             por_equipo.setdefault(tid, []).append(p)
     for lista in por_equipo.values():
         lista.sort(key=lambda p: p["fecha"], reverse=True)
 
+    if unicos and sport in _SPORT_A_INTERNO:
+        L.ingestar(_SPORT_A_INTERNO[sport], unicos, "espn")  # alimenta el libro (Elo e historial por nombre)
     U.log(f"[espn] historial {slug}: {len(vistos)} partidos, {len(por_equipo)} equipos")
     _cache_historial.set(clave, por_equipo, ttl=None if por_equipo else TTL_FALLO * 2)
     return por_equipo
@@ -325,3 +360,71 @@ def historial_equipo(evento, lado):
         return []
     tid = (evento.get(lado) or {}).get("id")
     return _historial_liga(sport, slug).get(tid, [])
+
+
+# ---------------------------------------------------------------------------
+# BAJAS CONFIRMADAS (endpoint /injuries de ESPN, solo para las ligas configuradas)
+# ---------------------------------------------------------------------------
+def _slugs_lesiones():
+    """ESPN_LESIONES_SLUGS = "basketball:wnba,hockey:..."; por defecto solo la WNBA."""
+    resultado = {}
+    for par in filter(None, (x.strip() for x in os.environ.get("ESPN_LESIONES_SLUGS", "basketball:wnba").split(","))):
+        if ":" not in par:
+            continue
+        sport, slug = (t.strip() for t in par.split(":", 1))
+        interno = _SPORT_A_INTERNO.get(sport)
+        if interno and _RE_SLUG_FEM.search(slug):
+            resultado.setdefault(interno, []).append((sport, slug))
+    return resultado
+
+
+def _lesiones_liga(sport, slug):
+    """{firma_equipo: {"fuera": n, "dudosas": m}} o None si ESPN no expone el endpoint para esa liga."""
+    clave = (sport, slug)
+    if time.time() < _lesiones_sin_soporte.get(clave, 0):
+        return None
+    hit, valor = _cache_lesiones.get(clave)
+    if hit:
+        return valor
+    info = {}
+    data = U.get_json(f"{BASE}/{sport}/{slug}/injuries", FUENTE, timeout=12, info=info)
+    if not isinstance(data, dict) or not isinstance(data.get("injuries"), list):
+        # 404/formato distinto: se asume sin soporte por 24 h (no se reintenta en cada barrido)
+        espera = 24 * 3600 if info.get("status") in (400, 404) or isinstance(data, dict) else TTL_FALLO
+        _lesiones_sin_soporte[clave] = time.time() + espera
+        U.log(f"[espn] sin datos de lesiones para {slug}; no se reintenta pronto")
+        return None
+    por_equipo = {}
+    for equipo in data["injuries"]:
+        if not isinstance(equipo, dict):
+            continue
+        nombre = equipo.get("displayName") or ""
+        fuera = dudosas = 0
+        for i in equipo.get("injuries") or []:
+            estado = str((i or {}).get("status") or "").lower()
+            if "out" in estado:
+                fuera += 1
+            elif any(x in estado for x in ("doubtful", "questionable", "day-to-day", "day to day")):
+                dudosas += 1
+        if nombre:
+            por_equipo[U.firma_equipo(nombre)] = {"fuera": fuera, "dudosas": dudosas}
+    _cache_lesiones.set(clave, por_equipo)
+    return por_equipo
+
+
+def lesiones_equipo(deporte_interno, nombre_equipo, inferir_cero=False):
+    """
+    Bajas de un equipo (por nombre) en las ligas configuradas del deporte, o None si no hay dato.
+    `inferir_cero=True` (solo vÃ¡lido con nombres de ESPN) interpreta "el equipo no figura en un listado
+    que sÃ­ trae a otros" como 0 bajas; con nombres de otro proveedor serÃ­a arriesgado y no se hace.
+    """
+    firma = U.firma_equipo(nombre_equipo or "")
+    for sport, slug in _slugs_lesiones().get(deporte_interno, []):
+        tabla = _lesiones_liga(sport, slug)
+        if not tabla:
+            continue
+        if firma in tabla:
+            return tabla[firma]
+        if inferir_cero and len(tabla) >= 5:
+            return {"fuera": 0, "dudosas": 0, "inferido": True}
+    return None

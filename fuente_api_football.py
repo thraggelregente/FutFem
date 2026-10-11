@@ -1,4 +1,4 @@
-"""
+﻿"""
 fuente_api_football.py
 API-Sports (https://www.api-sports.io/): fuente SECUNDARIA, con cuota (Free = 100 requests/dÃ­a
 COMPARTIDOS entre todos los deportes). ESPN es la principal; esta suma deportes y ligas que ESPN
@@ -27,6 +27,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+import libro_resultados as L
 import utilidades as U
 
 API_KEY = os.environ.get("API_FOOTBALL_KEY")
@@ -157,7 +158,7 @@ def _get(deporte, ruta, params):
             _avisar_una_vez(("limite", presupuesto.fecha), f"[api_sports] lÃ­mite diario alcanzado: {error}")
         elif "plan" in bajo or "season" in bajo or "access" in bajo or "not allowed" in bajo:
             _bloqueadas_hasta[clave_cooldown] = time.monotonic() + 24 * 3600
-            _avisar_una_vez(("plan", deporte, ruta, tipo_pedido), f"[api_sports] plan sin acceso a {deporte}{ruta} ({tipo_pedido}): {error}; no se reintentará durante 24 h")
+            _avisar_una_vez(("plan", deporte, ruta, tipo_pedido), f"[api_sports] plan sin acceso a {deporte}{ruta} ({tipo_pedido}): {error}; no se reintentarÃ¡ durante 24 h")
         elif "token" in bajo or "key" in bajo or "subscription" in bajo:
             _deshabilitada["motivo"] = error
             U.log(f"[api_sports] DESACTIVADA: {error}")
@@ -311,16 +312,18 @@ def _historial_liga(deporte, liga_id, season):
         return {}
     _ligas_pedidas_hoy["ligas"].add(clave)
 
-    por_equipo = {}
+    por_equipo, unicos = {}, []
     for n in (_normalizar_item(deporte, i) for i in resp):
         if not n or n["estado"] not in _FINALIZADOS or n["pl"] is None or n["pv"] is None:
             continue
         p = _como_partido_historico(n)
+        unicos.append(p)
         for tid in (n["id_local"], n["id_visita"]):
             por_equipo.setdefault(tid, []).append(p)
     for lista in por_equipo.values():
         lista.sort(key=lambda p: p["fecha"], reverse=True)
 
+    L.ingestar(deporte, unicos, "api_sports")
     U.log(f"[api_sports/{deporte}] historial liga {liga_id}: {sum(len(v) for v in por_equipo.values()) // 2} partidos")
     _cache_temporada.set(clave, por_equipo)
     return por_equipo

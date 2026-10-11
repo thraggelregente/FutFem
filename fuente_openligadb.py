@@ -1,10 +1,10 @@
-"""OpenLigaDB: fixtures y resultados de ligas femeninas de fútbol.
+﻿"""OpenLigaDB: fixtures y resultados de ligas femeninas de fÃºtbol.
 
 Fuente comunitaria sin API key ni cuota publicada. El acceso se limita a las ligas
-que el operador incluye explícitamente en OPENLIGADB_WOMENS_LEAGUES; nunca se
-intenta inferir el género a partir de equipos ambiguos.
+que el operador incluye explÃ­citamente en OPENLIGADB_WOMENS_LEAGUES; nunca se
+intenta inferir el gÃ©nero a partir de equipos ambiguos.
 
-Formato de configuración:
+Formato de configuraciÃ³n:
     OPENLIGADB_WOMENS_LEAGUES=ffb1:2026
     OPENLIGADB_WOMENS_LEAGUES=ffb1:2026,ffb2:2026
 
@@ -20,6 +20,7 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import quote
 
+import libro_resultados as L
 import utilidades as U
 
 BASE = (os.environ.get("OPENLIGADB_BASE") or "https://api.openligadb.de").rstrip("/")
@@ -111,7 +112,7 @@ def _partidos_liga(shortcut, season):
         return None
     partidos = [m for m in datos if isinstance(m, dict)]
     _cache.set(clave, partidos)
-    U.log(f"[openligadb] {shortcut}/{season}: {len(partidos)} partidos en caché")
+    U.log(f"[openligadb] {shortcut}/{season}: {len(partidos)} partidos en cachÃ©")
     return partidos
 
 
@@ -126,7 +127,7 @@ def _normalizar(match, shortcut, season, now_ts):
     if bool(match.get("MatchIsFinished")):
         return None
     liga_nombre = str(match.get("LeagueName") or "Frauen-Bundesliga")
-    # La competición proviene de la allowlist explícita de ligas femeninas.
+    # La competiciÃ³n proviene de la allowlist explÃ­cita de ligas femeninas.
     match_id = match.get("MatchID")
     if match_id is None:
         # Sin MatchID fiable no se puede deduplicar de forma segura.
@@ -155,7 +156,7 @@ def obtener_eventos(deporte_interno):
     for shortcut, season in _LIGAS:
         matches = _partidos_liga(shortcut, season)
         if matches is None:
-            _avisar_una_vez(("fallo", shortcut, season), f"[openligadb] sin datos para {shortcut}/{season}; se reintentará")
+            _avisar_una_vez(("fallo", shortcut, season), f"[openligadb] sin datos para {shortcut}/{season}; se reintentarÃ¡")
             continue
         for match in matches:
             ev = _normalizar(match, shortcut, season, now_ts)
@@ -163,7 +164,7 @@ def obtener_eventos(deporte_interno):
                 by_id[ev["id"]] = ev
     eventos = list(by_id.values())
     if eventos:
-        U.log(f"[openligadb] {len(eventos)} partidos femeninos próximos capturados")
+        U.log(f"[openligadb] {len(eventos)} partidos femeninos prÃ³ximos capturados")
     return eventos
 
 
@@ -209,4 +210,5 @@ def obtener_forma_reciente(nombre_equipo, deporte="Soccer", limite=8, id_interno
                 "puntos_visita": pv,
             })
     partidos.sort(key=lambda p: p["fecha"], reverse=True)
+    L.ingestar("Soccer", partidos, "openligadb")
     return partidos[:max(1, int(limite))]

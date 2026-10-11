@@ -415,6 +415,129 @@ class PresupuestoDiario:
         guardar_json(f"presupuesto_{self.nombre}.json", {"fecha": self.fecha, "usadas": self.usadas})
 
 
+class PresupuestoMultiple:
+    """
+    Presupuesto de requests/crÃ©ditos con tres ventanas (dÃ­a, semana ISO y mes, todo en UTC) y ritmo parejo.
+
+    Cada pedido debe pasar los tres topes a la vez:
+      - diario: tope duro por dÃ­a (opcional);
+      - semanal: tope duro por semana (por defecto, la parte proporcional del mes);
+      - mensual menos reserva: lo que queda del mes se reparte en los dÃ­as que faltan
+        (`ritmo`), asÃ­ el cupo del mes no se agota en unos pocos dÃ­as.
+    El estado se persiste (Upstash o archivo), por lo que un reinicio o deploy no "olvida" lo gastado.
+    """
+
+    def __init__(self, nombre, mensual, semanal=None, diario=None, reserva_mensual=0):
+        self.nombre = nombre
+        self.mensual = max(1, int(mensual))
+        self.reserva = max(0, int(reserva_mensual))
+        self.semanal = max(1, int(semanal)) if semanal else max(1, -(-self.mensual * 7 // 31))
+        self.diario = max(1, int(diario)) if diario else None
+        self.agotado = {"dia": None, "mes": None}  # periodo en el que la API dijo "sin cuota"
+        self._lock = threading.RLock()
+        crudo = cargar_json(f"presupuesto_{nombre}_multi.json", {})
+        self.claves = self._claves()
+        self.d = self.s = self.m = 0
+        if isinstance(crudo, dict):
+            try:
+                if crudo.get("mes") == self.claves["mes"]:
+                    self.m = max(0, int(crudo.get("m", 0)))
+                if crudo.get("semana") == self.claves["semana"]:
+                    self.s = max(0, int(crudo.get("s", 0)))
+                if crudo.get("dia") == self.claves["dia"]:
+                    self.d = max(0, int(crudo.get("d", 0)))
+            except (TypeError, ValueError):
+                self.d = self.s = self.m = 0
+
+    @staticmethod
+    def _ahora():
+        return datetime.now(timezone.utc)
+
+    def _claves(self):
+        ahora = self._ahora()
+        iso = ahora.isocalendar()
+        return {"dia": ahora.strftime("%Y-%m-%d"), "semana": f"{iso[0]}-W{iso[1]:02d}", "mes": ahora.strftime("%Y-%m")}
+
+    def _rotar(self):
+        nuevas = self._claves()
+        if nuevas["mes"] != self.claves["mes"]:
+            self.m = 0
+        if nuevas["semana"] != self.claves["semana"]:
+            self.s = 0
+        if nuevas["dia"] != self.claves["dia"]:
+            self.d = 0
+        self.claves = nuevas
+
+    def _dias_del_mes(self):
+        ahora = self._ahora()
+        siguiente = (ahora.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return (siguiente - ahora.replace(day=1)).days
+
+    def _dias_restantes_mes(self):
+        ahora = self._ahora()
+        siguiente = (ahora.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return max(1, (siguiente - ahora.replace(hour=0, minute=0, second=0, microsecond=0)).days)
+
+    @property
+    def usadas(self):
+        """Requests gastados hoy (compatibilidad con los logs y tests existentes)."""
+        with self._lock:
+            self._rotar()
+            return self.d
+
+    @property
+    def limite(self):
+        return self.diario or self.mensual
+
+    def permitido_ahora(self):
+        """CuÃ¡ntas unidades se pueden gastar todavÃ­a hoy sin romper ninguna ventana ni el ritmo."""
+        with self._lock:
+            self._rotar()
+            if self.agotado["dia"] == self.claves["dia"] or self.agotado["mes"] == self.claves["mes"]:
+                return 0
+            disponible_mes = self.mensual - self.reserva - self.m
+            if disponible_mes <= 0:
+                return 0
+            # Cupo de HOY = (lo que quedaba al empezar el dÃ­a) / (dÃ­as que faltan, hoy incluido).
+            ritmo_hoy = -(-(disponible_mes + self.d) // self._dias_restantes_mes())
+            # El "recupero" de dÃ­as con poco gasto tiene techo: nunca mÃ¡s de 1.5 veces el ritmo parejo del mes.
+            parejo = -(-(self.mensual - self.reserva) // self._dias_del_mes())
+            ritmo_hoy = min(ritmo_hoy, -(-parejo * 3 // 2))
+            topes = [ritmo_hoy - self.d, self.semanal - self.s, disponible_mes]
+            if self.diario:
+                topes.append(self.diario - self.d)
+            return max(0, min(topes))
+
+    def puede_gastar(self, n=1):
+        return self.permitido_ahora() >= n
+
+    def registrar(self, n=1):
+        with self._lock:
+            self._rotar()
+            self.d += n
+            self.s += n
+            self.m += n
+            self._guardar()
+
+    def marcar_agotado(self, periodo="dia"):
+        with self._lock:
+            self._rotar()
+            self.agotado[periodo] = self.claves[periodo]
+
+    def _guardar(self):
+        guardar_json(f"presupuesto_{self.nombre}_multi.json", {
+            "dia": self.claves["dia"], "semana": self.claves["semana"], "mes": self.claves["mes"],
+            "d": self.d, "s": self.s, "m": self.m,
+        })
+
+    def resumen(self):
+        with self._lock:
+            self._rotar()
+            tope_d = self.diario or "-"
+            return (f"hoy {self.d}/{tope_d}, semana {self.s}/{self.semanal}, "
+                    f"mes {self.m}/{self.mensual - self.reserva}")
+
+
 # ---------------------------------------------------------------------------
 # NOMBRES
 # ---------------------------------------------------------------------------

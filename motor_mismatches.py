@@ -19,7 +19,22 @@ Ojo: las seÃ±ales 2, 3, 6 y 8 salen de los MISMOS Ãºltimos partidos, asÃ­ 
 por eso el momentum no suma si la forma ya sumÃ³.
 
 DecisiÃ³n: alerta si puntaje_favorito >= 4 y puntaje_rival <= 1.
-Confianza: Media (4-5) / Alta (6-7) / Muy Alta (8+).
+Confianza: Media (4-5) / Alta (6-7) / Muy Alta (8+), con un tope: si todo el puntaje sale de UN solo
+grupo de seÃ±ales independientes (tabla / historial reciente / H2H), la confianza no pasa de Media.
+
+SeÃ±ales nuevas:
+ 11. Elo ajustado por rival y localÃ­a (libro_resultados.py)    -> 1-3 pts, grupo "fuerza"
+ 12. Plantel: bajas confirmadas del rival vs favorito (ESPN)   -> 1-2 pts, grupo "plantel"
+ Tenis: ranking + contexto de superficie y forma reciente (tenis_contexto.py), ver evaluar_mismatch_tenis.
+Rotaciones de alineaciÃ³n NO se pueden inferir de datos pÃºblicos gratuitos: se cubren solo a travÃ©s de
+descanso, congestiÃ³n y bajas confirmadas.
+
+Mejoras de rigor estadÃ­stico:
+- LocalÃ­a ponderada por deporte: la diferencia de cada partido se corrige por la ventaja de local
+  tÃ­pica del deporte y el umbral de forma suma la localÃ­a del partido evaluado.
+- Forma reciente PONDERADA por antigÃ¼edad (vida media de 45 dÃ­as) y con la diferencia de cada
+  partido recortada por deporte (una goleada 9-0 no distorsiona el promedio).
+- H2H neto: el favorito tiene que ganar mÃ¡s cruces que el rival, no solo >= 2.
 """
 
 import os
@@ -35,6 +50,21 @@ PUNTAJE_MINIMO = 4
 PUNTAJE_ALTA = 6
 PUNTAJE_MUY_ALTA = 8
 MIN_PARTIDOS_TABLA = 5
+VIDA_MEDIA_FORMA_DIAS = 45.0
+
+# Ventaja tÃ­pica de local expresada en la unidad del marcador (goles, puntos, sets). Valores iniciales
+# conservadores; para deportes sin entrada no se corrige.
+VENTAJA_LOCAL_PUNTOS = {
+    "Soccer": 0.30, "Ice Hockey": 0.20, "Basketball": 3.0, "Handball": 1.5, "Volleyball": 0.25, "Rugby": 2.0,
+}
+# Bajas confirmadas necesarias en el rival para considerar un plantel diezmado, por deporte.
+UMBRAL_BAJAS = {"Basketball": 3, "Ice Hockey": 3, "Soccer": 3, "Handball": 3, "Volleyball": 2, "Rugby": 4}
+
+# Tope de la diferencia por partido para el promedio de forma (evita que un resultado atÃ­pico domine).
+TOPE_DIFERENCIA = {
+    "Soccer": 4, "Ice Hockey": 4, "Field Hockey": 4, "Futsal": 6,
+    "Handball": 15, "Basketball": 30, "Rugby": 30,
+}
 
 
 def _otro(lado):
@@ -114,15 +144,20 @@ def evaluar_tabla_posiciones(tabla_data, id_local, id_visita, n_equipos=None):
 # ---------------------------------------------------------------------------
 # SEÃ‘AL 2: FORMA RECIENTE
 # ---------------------------------------------------------------------------
-def evaluar_rendimiento_reciente(partidos, id_equipo):
-    """Ãšltimos 6 partidos terminados (mÃ¡ximo 90 dÃ­as de antigÃ¼edad)."""
+def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
+    """
+    Ãšltimos 6 partidos terminados (mÃ¡ximo 90 dÃ­as). `dif_prom` es un promedio PONDERADO por
+    antigÃ¼edad (peso 0.5 ** (dÃ­as / 45)) de la diferencia por partido, recortada al tope del deporte.
+    """
     vacio = {"dif_prom": 0.0, "victorias": 0, "derrotas": 0, "muestras": 0}
     if not partidos:
         return vacio
 
-    diferencias, victorias, derrotas = [], 0, 0
+    tope = TOPE_DIFERENCIA.get(deporte)
+    suma_pesada, suma_pesos, victorias, derrotas, muestras = 0.0, 0.0, 0, 0, 0
     for p in partidos[:6]:
-        if calcular_dias_atras(p.get("fecha", "")) > 90:
+        dias = calcular_dias_atras(p.get("fecha", ""))
+        if dias > 90:
             continue
         es_local_hist = p.get("id_local") == id_equipo
         pts_prop = p.get("puntos_local") if es_local_hist else p.get("puntos_visita")
@@ -130,17 +165,24 @@ def evaluar_rendimiento_reciente(partidos, id_equipo):
         if pts_prop is None or pts_riv is None:
             continue
         dif = pts_prop - pts_riv
-        diferencias.append(dif)
+        if tope is not None:
+            dif = max(-tope, min(tope, dif))
+        peso = 0.5 ** (dias / VIDA_MEDIA_FORMA_DIAS)
+        hfa = VENTAJA_LOCAL_PUNTOS.get(deporte, 0.0)
+        dif_ajustada = dif - hfa if es_local_hist else dif + hfa  # lo ganado de local vale menos
+        suma_pesada += dif_ajustada * peso
+        suma_pesos += peso
+        muestras += 1
         if dif > 0:
             victorias += 1
         elif dif < 0:
             derrotas += 1
 
-    if not diferencias:
+    if not muestras:
         return vacio
     return {
-        "dif_prom": round(sum(diferencias) / len(diferencias), 2),
-        "victorias": victorias, "derrotas": derrotas, "muestras": len(diferencias),
+        "dif_prom": round(suma_pesada / suma_pesos, 2),
+        "victorias": victorias, "derrotas": derrotas, "muestras": muestras,
     }
 
 
@@ -271,21 +313,31 @@ def _es_wc(nombre, entry=None):
 
 def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
                            entry_local=None, entry_visita=None,
-                           fuera_local=False, fuera_visita=False):
+                           fuera_local=False, fuera_visita=False, corte_ranking=None):
     """
     Devuelve (hay_mismatch, detalle, favorito, puntos).
-    `fuera_*` = la jugadora no aparece en la lista de ranking consultada (equivale a "sin ranking
-    relevante"); sirve cuando la fuente solo informa el ranking de las cabezas de serie.
-    Niveles:
-    - Favorita top 30  vs sin ranking/Wild Card o rank > 500 -> 3 pts (Rojo)
-    - Favorita top 100 vs sin ranking/Wild Card o rank > 300 -> 2 pts (Naranja)
-    - Favorita top 200 vs sin ranking/Wild Card o rank > 250 -> 1 pt  (Amarillo)
+
+    QuÃ© se sabe de cada jugadora: su ranking EXACTO (figura en la lista de ranking) o, si `fuera_*`,
+    solo que su ranking es MAYOR que `corte_ranking` (la lista de ESPN trae solo el top N). Una jugadora
+    que no figura NO es "sin ranking": puede ser la #250 o la #361. Por eso se usa como rival el ranking
+    efectivo r = exacto, o corte+1 (cota inferior: nunca se supone que estÃ¡ peor de lo que se sabe).
+
+    Niveles (favorita con ranking exacto f; r = ranking efectivo del rival; siempre r - f >= 100):
+    - Rojo    (3 pts): f <= 30  y r >= 5.0 * f
+    - Naranja (2 pts): f <= 60  y r >= 3.5 * f
+    - Amarillo(1 pt) : f <= 100 y r >= 2.5 * f
+    Con corte 150: #8 vs "fuera del top 150" es Rojo; #48 vs "fuera del top 150" es solo Amarillo;
+    #125 vs "fuera del top 150" no es seÃ±al. Sin corte conocido, "fuera" no se interpreta.
     """
     rl, rv = _rank_valido(rank_local), _rank_valido(rank_visita)
     wc_l, wc_v = _es_wc(nombre_local, entry_local), _es_wc(nombre_visita, entry_visita)
 
-    def rival_flojo(rk_r, sin_ranking, minimo):
-        return (rk_r is None and sin_ranking) or (rk_r is not None and rk_r > minimo)
+    def efectivo(rk, fuera):
+        if rk is not None:
+            return rk, True
+        if fuera and corte_ranking:
+            return int(corte_ranking) + 1, False
+        return None, False
 
     for lado, nom_f, rk_f, nom_r, rk_r, wc_r, fuera_r in (
         (LOCAL, nombre_local, rl, nombre_visita, rv, wc_v, fuera_visita),
@@ -293,22 +345,35 @@ def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
     ):
         if rk_f is None:
             continue
-        sin_ranking = wc_r or fuera_r
-        if rk_f <= 30 and rival_flojo(rk_r, sin_ranking, 500):
+        r_eff, exacto = efectivo(rk_r, fuera_r)
+        if r_eff is None or r_eff - rk_f < 100:
+            continue
+        if rk_f <= 30 and r_eff >= 5.0 * rk_f:
             puntos, nivel = 3, "ðŸ”´ Rojo"
-        elif rk_f <= 100 and rival_flojo(rk_r, sin_ranking, 300):
+        elif rk_f <= 60 and r_eff >= 3.5 * rk_f:
             puntos, nivel = 2, "ðŸŸ  Naranja"
-        elif rk_f <= 200 and rival_flojo(rk_r, sin_ranking, 250):
+        elif rk_f <= 100 and r_eff >= 2.5 * rk_f:
             puntos, nivel = 1, "ðŸŸ¡ Amarillo"
         else:
             continue
 
-        rival_txt = f"Rank #{rk_r}" if rk_r else ("fuera del ranking" if fuera_r else "sin ranking")
+        rival_txt = f"Rank #{rk_r}" if exacto else f"fuera del top {int(corte_ranking)} (rank > {int(corte_ranking)})"
         wc_txt = " (Wild Card)" if wc_r else ""
         detalle = f"{nivel}: {nom_f} (Rank #{rk_f}) vs {nom_r}{wc_txt} ({rival_txt})"
         return True, detalle, lado, puntos
 
     return False, "", None, 0
+
+
+def ajustar_tenis_por_contexto(favorito_lado, ctx):
+    """
+    Combina el ranking con el contexto de superficie y forma (tenis_contexto.evaluar_contexto).
+    `ctx` = {"favorita_ventaja": int(-2..2), "detalles": [...]} ya orientado a la favorita por ranking.
+    Devuelve (ajuste_puntos, detalles). Sin contexto: (0, []).
+    """
+    if not ctx:
+        return 0, []
+    return max(-2, min(2, int(ctx.get("favorita_ventaja", 0)))), list(ctx.get("detalles", []))
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +453,55 @@ def evaluar_momentum(partidos, id_equipo):
 
 
 # ---------------------------------------------------------------------------
+# SEÃ‘AL 11: ELO (fuerza ajustada por rival y localÃ­a)
+# ---------------------------------------------------------------------------
+def evaluar_elo(elo):
+    """`elo` = salida de libro_resultados.consulta_elo. Devuelve {favorito, puntos, detalle} o None."""
+    if not elo:
+        return None
+    p_local = elo["p_local"]
+    p = max(p_local, 1.0 - p_local)
+    if p >= 0.88:
+        puntos = 3
+    elif p >= 0.80:
+        puntos = 2
+    elif p >= 0.72:
+        puntos = 1
+    else:
+        return None
+    favorito = LOCAL if p_local >= 0.5 else VISITA
+    elo_f, elo_r = (elo["elo_local"], elo["elo_visita"]) if favorito == LOCAL else (elo["elo_visita"], elo["elo_local"])
+    return {
+        "favorito": favorito, "puntos": puntos,
+        "detalle": (f"Elo: {favorito} {elo_f} vs {elo_r} (prob. {round(p * 100)}% con localÃ­a; "
+                    f"{elo['n_local']}/{elo['n_visita']} partidos en el libro)"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# SEÃ‘AL 12: PLANTEL (bajas confirmadas)
+# ---------------------------------------------------------------------------
+def evaluar_plantel(bajas_local, bajas_visita, deporte):
+    """
+    `bajas_*` = {"fuera": n, "dudosas": m} o None si no hay dato. El favorito es el lado con
+    el plantel mÃ¡s sano cuando el rival tiene >= umbral bajas confirmadas y el favorito <= 1.
+    Sin dato de AMBOS equipos no se emite seÃ±al (no se asume que "sin dato" = "sin bajas").
+    """
+    if not bajas_local or not bajas_visita:
+        return None
+    umbral = UMBRAL_BAJAS.get(deporte, 3)
+    fl, fv = int(bajas_local.get("fuera", 0)), int(bajas_visita.get("fuera", 0))
+    for fav, sano, golpeado in ((LOCAL, fl, fv), (VISITA, fv, fl)):
+        if golpeado >= umbral and sano <= 1:
+            rival = _otro(fav)
+            return {
+                "favorito": fav, "puntos": 2 if golpeado >= umbral + 2 else 1,
+                "detalle": f"Plantel: {rival} con {golpeado} bajas confirmadas vs {sano} de {fav}",
+            }
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SALIDA COMPATIBLE: MODO CERO CUOTAS / CERO MERCADOS
 # ---------------------------------------------------------------------------
 def sugerir_mercado(deporte, favorito, nombre_fav=None):
@@ -406,14 +520,16 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
     """
     puntos = {LOCAL: 0, VISITA: 0}
     textos = {LOCAL: [], VISITA: []}
+    grupos = {LOCAL: set(), VISITA: set()}  # grupos de seÃ±ales independientes que aportan por lado
 
-    def sumar(lado, pts, texto):
+    def sumar(lado, pts, texto, grupo="historial"):
         puntos[lado] += pts
         textos[lado].append(texto)
+        grupos[lado].add(grupo)
 
     # SeÃ±al 1: Tabla (2 pts)
     if tabla_local_visita and tabla_local_visita.get("es_mismatch_tabla"):
-        sumar(tabla_local_visita["favorito"], 2, tabla_local_visita["detalle"])
+        sumar(tabla_local_visita["favorito"], 2, tabla_local_visita["detalle"], "tabla")
 
     # SeÃ±al 2: Forma reciente (2 pts base + 1 extra)
     forma_sumo = {LOCAL: False, VISITA: False}
@@ -424,6 +540,8 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             pf, pr = perf[fav], perf[_otro(fav)]
             if pf["muestras"] >= 4 and pr["muestras"] >= 4 and pf["victorias"] >= 3 and pr["derrotas"] >= 3:
                 brecha = pf["dif_prom"] - pr["dif_prom"]
+                hfa_partido = VENTAJA_LOCAL_PUNTOS.get(deporte, 0.0)
+                brecha += hfa_partido if fav == LOCAL else -hfa_partido  # el favorito de local parte con ventaja
                 if brecha >= umbral:
                     extra = 1 if brecha >= umbral * 2 else 0
                     forma_sumo[fav] = True
@@ -452,7 +570,9 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             medios = [x for x in h2h.get("medio", []) if x["ganador"] == fav]
             viejos = [x for x in h2h.get("viejo", []) if x["ganador"] == fav]
             total_fav = len(recientes) + len(medios) + len(viejos)
-            if total_fav >= 2:
+            total_rival = sum(1 for k in ("reciente", "medio", "viejo")
+                              for x in h2h.get(k, []) if x["ganador"] == _otro(fav))
+            if total_fav >= 2 and total_fav > total_rival:
                 pts = 2 if recientes else (1 if medios else 0.5)
                 detalle = f"H2H: {fav} ganÃ³ {total_fav} cruces ("
                 partes = []
@@ -460,7 +580,9 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                 if medios: partes.append(f"{len(medios)} 6-18m")
                 if viejos: partes.append(f"{len(viejos)} +18m")
                 detalle += ", ".join(partes) + ")"
-                sumar(fav, pts, detalle)
+                if total_rival:
+                    detalle += f" vs {total_rival} del rival"
+                sumar(fav, pts, detalle, "h2h")
 
     # SeÃ±al 6: Descanso (0-1 pt)
     if datos_extra and datos_extra.get("descanso"):
@@ -473,6 +595,16 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
         d = datos_extra.get("descanso")
         if not (d and d.get("favorito") == c["favorito"]):
             sumar(c["favorito"], 1, c["detalle"])
+
+    # SeÃ±al 11: Elo (0-3 pts)
+    if datos_extra and datos_extra.get("elo"):
+        e = datos_extra["elo"]
+        sumar(e["favorito"], e["puntos"], e["detalle"], "fuerza")
+
+    # SeÃ±al 12: Plantel (0-2 pts)
+    if datos_extra and datos_extra.get("plantel"):
+        pl_ = datos_extra["plantel"]
+        sumar(pl_["favorito"], pl_["puntos"], pl_["detalle"], "plantel")
 
     # SeÃ±al 8: Momentum (0-2 pts)
     if datos_extra:
@@ -508,10 +640,18 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             confianza = "Alta"
         else:
             confianza = "Media"
+        # Las seÃ±ales de historial comparten los mismos partidos: sin un segundo grupo independiente
+        # (tabla, H2H, fuerza Elo o plantel) la confianza no pasa de Media; "Muy Alta" pide tres grupos.
+        n_grupos = len(grupos[favorito])
+        if n_grupos < 2:
+            confianza = "Media"
+        elif n_grupos < 3 and confianza == "Muy Alta":
+            confianza = "Alta"
         resultado.update({
             "hay_mismatch": True,
             "favorito": favorito,
             "alertas": textos[favorito],
             "confianza": confianza,
+            "grupos_independientes": len(grupos[favorito]),
         })
     return resultado

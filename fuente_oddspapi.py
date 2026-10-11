@@ -1,17 +1,17 @@
-"""OddsPapi V4 como fuente de fixtures deportivos, sin consumir datos de cuotas.
+﻿"""OddsPapi V4 como fuente de fixtures deportivos, sin consumir datos de cuotas.
 
-ÚNICA ruta billable usada por defecto: GET /v4/fixtures. No se consultan ni
-almacenan odds, mercados, bookmakers, márgenes o probabilidades implícitas.
-Autenticación: apiKey como parámetro de query (documentación oficial); se envía
-además X-API-Key como compatibilidad con gateways que lo admiten.
+ÃšNICA ruta billable usada por defecto: GET /v4/fixtures. No se consultan ni
+almacenan odds, mercados, bookmakers, mÃ¡rgenes o probabilidades implÃ­citas.
+AutenticaciÃ³n: apiKey como parÃ¡metro de query (documentaciÃ³n oficial); se envÃ­a
+ademÃ¡s X-API-Key como compatibilidad con gateways que lo admiten.
 
-Guardarraíles:
-- 6 requests billable/día por defecto y 180/mes en contador persistente local.
-- Consulta opcional a GET /v4/account (endpoint no medido según documentación)
+GuardarraÃ­les:
+- 6 requests billable/dÃ­a por defecto y 180/mes en contador persistente local.
+- Consulta opcional a GET /v4/account (endpoint no medido segÃºn documentaciÃ³n)
   para pausar antes de tocar la cuota real restante.
 - Cache de fixtures de 4 h y forma/H2H apagadas por defecto.
 - La allowlist ODDSPAPI_WOMENS_TOURNAMENT_IDS acepta torneos sin marca visible de
-  género; agregá solamente IDs que hayas verificado como femeninos.
+  gÃ©nero; agregÃ¡ solamente IDs que hayas verificado como femeninos.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+import libro_resultados as L
 import utilidades as U
 
 API_KEY = (os.environ.get("ODDSPAPI_API_KEY") or "").strip()
@@ -28,7 +29,7 @@ FUENTE = "oddspapi"
 BASE = (os.environ.get("ODDSPAPI_BASE") or "https://api.oddspapi.io/v4").rstrip("/")
 HORAS_VENTANA = max(1, int(os.environ.get("ODDSPAPI_VENTANA_HORAS", "24")))
 HORAS_PEDIDO = max(HORAS_VENTANA, min(36, int(os.environ.get("ODDSPAPI_HORAS_PEDIDO", "36"))))
-CACHE_MINUTOS = max(30, int(os.environ.get("ODDSPAPI_CACHE_MINUTOS", "240")))
+CACHE_MINUTOS = max(30, int(os.environ.get("ODDSPAPI_CACHE_MINUTOS", "480")))
 
 _DEPORTES = {
     "soccer": "Soccer", "football": "Soccer",
@@ -45,16 +46,26 @@ DEPORTES_ACTIVOS = [
     ).split(",") if d.strip() in set(_DEPORTES.values())
 ]
 PROFUNDIDAD = os.environ.get("ODDSPAPI_PROFUNDIDAD", "0").strip() == "1"
-RESERVA_EVENTOS = max(0, int(os.environ.get("ODDSPAPI_RESERVA_EVENTOS", "1")))
+# "Profundidad" eficiente: UN request por dÃ­a trae los resultados de los Ãºltimos 3 dÃ­as de TODOS los
+# deportes (statusId=2) y los anota en el libro de resultados. Reemplaza el pedido por equipo
+# (PROFUNDIDAD=1), que cuesta 1 request por equipo y es inviable con 180 requests al mes.
+HISTORIAL_DIARIO = os.environ.get("ODDSPAPI_HISTORIAL_DIARIO", "1").strip().lower() not in {"0", "false", "no", "off"}
+HISTORIAL_HORAS = max(12, int(os.environ.get("ODDSPAPI_HISTORIAL_HORAS", "24")))
+HISTORIAL_DIAS_ATRAS = max(1, min(7, int(os.environ.get("ODDSPAPI_HISTORIAL_DIAS", "3"))))
 LIMITE_MENSUAL_LOCAL = max(1, int(os.environ.get("ODDSPAPI_MONTHLY_LIMIT", "180")))
 RESERVA_CUOTA_REAL = max(0, int(os.environ.get("ODDSPAPI_RESERVA_CUOTA_REAL", "25")))
 CONTROL_CUOTA_REAL = os.environ.get("ODDSPAPI_CONTROL_CUOTA_REAL", "1").strip().lower() not in {"0", "false", "no", "off"}
 CACHE_CUOTA_REAL_SEGUNDOS = max(3600, int(os.environ.get("ODDSPAPI_CUOTA_REAL_CACHE_HORAS", "6")) * 3600)
 
-presupuesto = U.PresupuestoDiario(
+# Plan por defecto: 3 listados de fixtures por dÃ­a (cada 8 h) + 1 feed de resultados = ~4/dÃ­a = ~120 al
+# mes, dentro del tope propio de 180 y con 20 de reserva para reinicios/deploys. El presupuesto exige
+# ademÃ¡s tope semanal y reparte el mes en partes iguales: nunca se gasta el mes en pocos dÃ­as.
+presupuesto = U.PresupuestoMultiple(
     "oddspapi",
-    limite=os.environ.get("ODDSPAPI_DAILY_LIMIT", "6"),
-    reserva=os.environ.get("ODDSPAPI_RESERVA", "0"),
+    mensual=LIMITE_MENSUAL_LOCAL,
+    semanal=os.environ.get("ODDSPAPI_WEEKLY_LIMIT", "35"),
+    diario=os.environ.get("ODDSPAPI_DAILY_LIMIT", "6"),
+    reserva_mensual=os.environ.get("ODDSPAPI_RESERVA_MENSUAL", "20"),
 )
 _cache_eventos = U.CacheTTL(CACHE_MINUTOS * 60)
 _cache_participante = U.CacheTTL(6 * 3600)
@@ -76,7 +87,7 @@ def disponible():
 
 
 def _headers():
-    # La documentación V4 usa apiKey en query. El header extra no reemplaza ese parámetro.
+    # La documentaciÃ³n V4 usa apiKey en query. El header extra no reemplaza ese parÃ¡metro.
     return {"Accept": "application/json", "X-API-Key": API_KEY}
 
 
@@ -84,28 +95,8 @@ def _mes_utc():
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def _leer_presupuesto_mensual():
-    data = U.cargar_json("presupuesto_oddspapi_mensual.json", {})
-    mes = _mes_utc()
-    if not isinstance(data, dict) or data.get("mes") != mes:
-        return {"mes": mes, "usadas": 0}
-    try:
-        usadas = max(0, int(data.get("usadas", 0)))
-    except (TypeError, ValueError):
-        usadas = 0
-    return {"mes": mes, "usadas": usadas}
-
-
-def _guardar_consumo_mensual():
-    with _lock:
-        estado = _leer_presupuesto_mensual()
-        estado["usadas"] += 1
-        U.guardar_json("presupuesto_oddspapi_mensual.json", estado)
-        return estado["usadas"]
-
-
 def _cuota_real_restante(forzar=False):
-    """Lee /account, endpoint que la documentación marca como no medido."""
+    """Lee /account, endpoint que la documentaciÃ³n marca como no medido."""
     if not CONTROL_CUOTA_REAL or not API_KEY:
         return None
     ahora = time.time()
@@ -143,14 +134,8 @@ def _cuota_real_restante(forzar=False):
         return restantes
 
 
-def _presupuesto_mensual_disponible():
-    estado = _leer_presupuesto_mensual()
-    if estado["usadas"] >= LIMITE_MENSUAL_LOCAL:
-        _avisar_una_vez(
-            ("mensual", estado["mes"]),
-            f"[oddspapi] tope local mensual alcanzado ({estado['usadas']}/{LIMITE_MENSUAL_LOCAL}); se reanuda el próximo mes UTC",
-        )
-        return False
+def _cuota_real_ok():
+    """False si /account informa que quedan menos requests que la reserva real."""
     restante_real = _cuota_real_restante()
     if restante_real is not None and restante_real <= RESERVA_CUOTA_REAL:
         _avisar_una_vez(
@@ -161,26 +146,24 @@ def _presupuesto_mensual_disponible():
     return True
 
 
-def _get(ruta, params=None):
-    """Solicita datos de fixtures/historial y contabiliza solo endpoints billables."""
+def _get(ruta, params=None, exigir=1):
+    """
+    Pide datos de fixtures y contabiliza solo endpoints billables. `exigir` = cupo que debe quedar
+    disponible HOY (diario, semanal y ritmo mensual) para hacer el pedido: los pedidos opcionales
+    exigen mÃ¡s para no quitarle cupo al listado de fixtures, que tiene prioridad.
+    """
     global _backoff_hasta
     if not disponible():
         return None
     es_account = ruta.rstrip("/") == "/account"
     if not es_account:
-        if not presupuesto.puede_gastar(1):
+        if not presupuesto.puede_gastar(exigir):
             _avisar_una_vez(
-                ("diario", presupuesto.fecha),
-                f"[oddspapi] tope diario alcanzado ({presupuesto.usadas}/{presupuesto.limite}); no se hacen más requests hoy UTC",
+                ("cupo", presupuesto.claves["dia"], exigir),
+                f"[oddspapi] sin cupo para este pedido ({presupuesto.resumen()}); se reanuda cuando el ritmo lo permita",
             )
             return None
-        if presupuesto.restantes() <= RESERVA_EVENTOS:
-            _avisar_una_vez(
-                ("reserva-eventos", presupuesto.fecha),
-                "[oddspapi] requests restantes reservados para fixtures; se omite profundidad opcional",
-            )
-            return None
-        if not _presupuesto_mensual_disponible():
+        if not _cuota_real_ok():
             return None
 
     parametros = dict(params or {})
@@ -190,15 +173,13 @@ def _get(ruta, params=None):
     status = info.get("status")
     if not es_account and status is not None:
         presupuesto.registrar(1)
-        usada_mes = _guardar_consumo_mensual()
-        if usada_mes >= LIMITE_MENSUAL_LOCAL:
-            _avisar_una_vez(("tope-mes", _mes_utc()), f"[oddspapi] alcanzó el tope de seguridad mensual: {usada_mes}")
+        U.log(f"[oddspapi] request {ruta} registrado: {presupuesto.resumen()}")
     if status == 429:
-        presupuesto.marcar_agotado()
+        presupuesto.marcar_agotado("dia")
         _backoff_hasta = time.time() + 6 * 3600
-        _avisar_una_vez(("429", presupuesto.fecha), "[oddspapi] HTTP 429; fuente pausada por 6 h para proteger la cuota")
+        _avisar_una_vez(("429", presupuesto.claves["dia"]), "[oddspapi] HTTP 429; fuente pausada por 6 h para proteger la cuota")
     elif status in (401, 403):
-        _deshabilitada["motivo"] = f"HTTP {status}: clave inválida o sin permiso"
+        _deshabilitada["motivo"] = f"HTTP {status}: clave invÃ¡lida o sin permiso"
         U.log(f"[oddspapi] DESACTIVADA: {_deshabilitada['motivo']}")
     return data
 
@@ -214,7 +195,7 @@ def _deporte_de(fixture):
     if deporte:
         return deporte
     sport_id = sport.get("sportId", fixture.get("sportId"))
-    # IDs documentados/usados con frecuencia; no se asume género a partir del ID.
+    # IDs documentados/usados con frecuencia; no se asume gÃ©nero a partir del ID.
     try:
         return {10: "Soccer", 11: "Basketball", 12: "Tennis", 13: "Handball", 14: "Volleyball", 15: "Ice Hockey", 16: "Rugby"}.get(int(sport_id))
     except (TypeError, ValueError):
@@ -287,10 +268,32 @@ def _como_historico(partido):
     }
 
 
+ARCHIVO_VENTANA = "oddspapi_ventana.json"
+ARCHIVO_HISTORIAL = "oddspapi_historial.json"
+
+
+def _cargar_ventana_persistida():
+    """Tras un reinicio/deploy reutiliza el Ãºltimo listado si todavÃ­a es fresco (no repite el pedido)."""
+    crudo = U.cargar_json(ARCHIVO_VENTANA, {})
+    try:
+        edad = time.time() - float(crudo.get("ts", 0))
+        items = crudo.get("items")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if isinstance(items, list) and 0 <= edad < CACHE_MINUTOS * 60:
+        _cache_eventos.set("ventana", items, ttl=CACHE_MINUTOS * 60 - edad)
+        U.log(f"[oddspapi] listado reutilizado tras el reinicio ({len(items)} fixtures, {int(edad / 60)} min de antigÃ¼edad)")
+        return items
+    return None
+
+
 def _fixtures_ventana():
     hit, valor = _cache_eventos.get("ventana")
     if hit:
         return valor
+    persistido = _cargar_ventana_persistida()
+    if persistido is not None:
+        return persistido
     ahora = datetime.now(timezone.utc)
     hasta = ahora + timedelta(hours=HORAS_PEDIDO)
     parametros = {
@@ -301,13 +304,18 @@ def _fixtures_ventana():
     # No agregar hasOdds, bookmakers ni consultar endpoints de odds/markets.
     data = _get("/fixtures", parametros)
     if not isinstance(data, list):
+        # Enfriamiento: sin esto cada deporte del mismo barrido repetirÃ­a el pedido fallido y gastarÃ­a cupo.
+        _cache_eventos.set("ventana", [], ttl=30 * 60)
         return []
     items = [p for p in (_normalizar(f) for f in data) if p]
     if data and not items:
-        _avisar_una_vez("normalizacion", f"[oddspapi] la API devolvió {len(data)} fixtures, pero ninguno se pudo normalizar")
-    U.log(f"[oddspapi] {len(items)} fixtures recibidos; se filtran por género, deporte y ventana")
-    _cache_eventos.set("ventana", items)
-    return items
+        _avisar_una_vez("normalizacion", f"[oddspapi] la API devolviÃ³ {len(data)} fixtures, pero ninguno se pudo normalizar")
+    U.log(f"[oddspapi] {len(items)} fixtures recibidos; se filtran por gÃ©nero, deporte y ventana")
+    # Se persisten solo los femeninos pre-match: alcanza para el radar y mantiene el archivo chico.
+    utiles = [p for p in items if p["estado"] == 0 and _torneo_femenino(p)]
+    U.guardar_json(ARCHIVO_VENTANA, {"ts": time.time(), "items": utiles})
+    _cache_eventos.set("ventana", utiles)
+    return utiles
 
 
 def _torneo_femenino(partido):
@@ -318,13 +326,56 @@ def _torneo_femenino(partido):
     return U.es_femenino(partido.get("torneo", ""), partido.get("nom_local", ""), partido.get("nom_visita", ""))
 
 
+def _terminados_recientes():
+    """
+    Un Ãºnico request cada HISTORIAL_HORAS: resultados terminados de los Ãºltimos dÃ­as de todos los deportes.
+    Solo se anotan los femeninos en el libro de resultados (historial por nombre y Elo). Se ejecuta
+    despuÃ©s del listado de fixtures y solo si queda cupo para ambos.
+    """
+    if not HISTORIAL_DIARIO or not disponible():
+        return 0
+    estado = U.cargar_json(ARCHIVO_HISTORIAL, {})
+    estado = estado if isinstance(estado, dict) else {}
+    ahora = time.time()
+    if ahora - float(estado.get("ultimo", 0) or 0) < HISTORIAL_HORAS * 3600:
+        return 0
+    if ahora - float(estado.get("intento", 0) or 0) < 3 * 3600:
+        return 0  # un intento fallido no se repite en cada barrido
+    if not presupuesto.puede_gastar(2):  # deja siempre 1 pedido para el listado de fixtures
+        return 0
+    desde = datetime.now(timezone.utc) - timedelta(days=HISTORIAL_DIAS_ATRAS)
+    estado["intento"] = ahora
+    U.guardar_json(ARCHIVO_HISTORIAL, estado)
+    data = _get("/fixtures", {
+        "from": desde.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "to": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "statusId": 2,
+    }, exigir=2)
+    if not isinstance(data, list):
+        return 0
+    por_deporte = {}
+    for raw in data:
+        partido = _normalizar(raw)
+        if (not partido or partido["estado"] != 2 or partido["pl"] is None or partido["pv"] is None
+                or partido["deporte"] not in DEPORTES_ACTIVOS or not _torneo_femenino(partido)):
+            continue
+        por_deporte.setdefault(partido["deporte"], []).append(_como_historico(partido))
+    nuevos = sum(L.ingestar(dep, lista, "oddspapi") for dep, lista in por_deporte.items())
+    estado["ultimo"] = ahora
+    U.guardar_json(ARCHIVO_HISTORIAL, estado)
+    U.log(f"[oddspapi] feed de terminados: {len(data)} fixtures, {nuevos} resultados femeninos nuevos en el libro")
+    return nuevos
+
+
 def obtener_eventos(deporte):
-    """Devuelve solo fixtures pre-match femeninos de las próximas 24 h."""
+    """Devuelve solo fixtures pre-match femeninos de las prÃ³ximas 24 h."""
     if deporte not in DEPORTES_ACTIVOS or not disponible():
         return []
     ahora = datetime.now(timezone.utc).timestamp()
     eventos = []
-    for partido in _fixtures_ventana():
+    ventana = _fixtures_ventana()
+    _terminados_recientes()
+    for partido in ventana:
         if partido["deporte"] != deporte or partido["estado"] != 0:
             continue
         ts = partido["ts"]
@@ -356,9 +407,7 @@ def _terminados_del_participante(participante_id):
     hit, valor = _cache_participante.get(str(participante_id))
     if hit:
         return valor
-    if presupuesto.restantes() <= RESERVA_EVENTOS or not _presupuesto_mensual_disponible():
-        return None
-    data = _get("/fixtures", {"participantId": participante_id})
+    data = _get("/fixtures", {"participantId": participante_id}, exigir=3)
     if not isinstance(data, list):
         return None
     partidos = []

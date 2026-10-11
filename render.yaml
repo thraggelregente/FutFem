@@ -57,19 +57,22 @@
       - key: HIGHLIGHTLY_WOMENS_LEAGUES
         value: ""
 
-      # OddsPapi queda restringida a fixtures; no se llama a /odds, /markets ni /bookmakers.
+      # OddsPapi: solo fixtures y resultados; no se llama a /odds, /markets ni /bookmakers.
+      # Plan de requests: 3 listados/dÃ­a (cada 8 h) + 1 feed diario de terminados = ~4/dÃ­a = ~120 al mes,
+      # con tope propio de 180, tope semanal de 35, tope diario de 6 y 20 de reserva mensual. El mes se
+      # reparte en partes iguales (nunca se gasta en pocos dÃ­as) y el estado persiste entre deploys.
       - key: ODDSPAPI_API_KEY
         sync: false
       - key: ODDSPAPI_DEPORTES
         value: Soccer,Volleyball,Handball,Basketball,Ice Hockey,Tennis,Rugby
       - key: ODDSPAPI_DAILY_LIMIT
         value: "6"
-      - key: ODDSPAPI_RESERVA
-        value: "0"
-      - key: ODDSPAPI_RESERVA_EVENTOS
-        value: "1"
+      - key: ODDSPAPI_WEEKLY_LIMIT
+        value: "35"
       - key: ODDSPAPI_MONTHLY_LIMIT
         value: "180"
+      - key: ODDSPAPI_RESERVA_MENSUAL
+        value: "20"
       - key: ODDSPAPI_RESERVA_CUOTA_REAL
         value: "25"
       - key: ODDSPAPI_CONTROL_CUOTA_REAL
@@ -77,14 +80,25 @@
       - key: ODDSPAPI_CUOTA_REAL_CACHE_HORAS
         value: "6"
       - key: ODDSPAPI_CACHE_MINUTOS
-        value: "240"
+        value: "480"
+      # Profundidad eficiente: 1 request/dÃ­a con los resultados de los Ãºltimos 3 dÃ­as de todos los deportes.
+      - key: ODDSPAPI_HISTORIAL_DIARIO
+        value: "1"
+      - key: ODDSPAPI_HISTORIAL_HORAS
+        value: "24"
+      - key: ODDSPAPI_HISTORIAL_DIAS
+        value: "3"
+      # NO activar: el pedido por equipo cuesta 1 request por equipo y agotarÃ­a el mes en horas.
       - key: ODDSPAPI_PROFUNDIDAD
         value: "0"
       # Agregar solo IDs que estÃ©n verificados como torneos femeninos.
       - key: ODDSPAPI_WOMENS_TOURNAMENT_IDS
         value: ""
 
-      # The Odds API: SOLO fixtures (/sports y /events, sin costo de cuota). No se piden cuotas ni mercados.
+      # The Odds API: fixtures (/sports y /events, sin costo) y resultados (/scores, 2 crÃ©ditos por llamada).
+      # No se piden cuotas ni mercados. Presupuesto propio del radar: 150 crÃ©ditos/mes (30% del plan
+      # gratuito de 500), repartidos en partes iguales (~5/dÃ­a), con tope diario de 6 y reserva real de 250:
+      # si el saldo REAL de la cuenta baja de 250 (por ejemplo por otro proyecto con la misma clave), el radar frena.
       - key: ODDS_API_KEY
         sync: false
       - key: THEODDSAPI_DEPORTES
@@ -93,9 +107,35 @@
         value: "30"
       - key: THEODDSAPI_CACHE_MINUTOS
         value: "45"
+      - key: THEODDSAPI_RESULTADOS
+        value: "1"
+      - key: THEODDSAPI_CREDITOS_MES
+        value: "150"
+      - key: THEODDSAPI_CREDITOS_DIA
+        value: "6"
+      - key: THEODDSAPI_RESERVA_REAL
+        value: "250"
+      - key: THEODDSAPI_HORAS_ENTRE_RESULTADOS
+        value: "20"
       # Competiciones femeninas verificadas que no tengan marca visible en el catÃ¡logo (opcional).
       - key: THEODDSAPI_EXTRA_SPORT_KEYS
         value: ""
+
+      # Libro de resultados (historial por nombre y Elo). Requiere Upstash para sobrevivir a los deploys.
+      - key: LIBRO_MAX_PARTIDOS
+        value: "5000"
+      - key: LIBRO_DIAS_RETENCION
+        value: "150"
+      - key: ELO_MIN_PARTIDOS
+        value: "5"
+      # Bajas confirmadas (ESPN /injuries) solo para ligas donde el endpoint exista; formato deporte:slug.
+      - key: ESPN_LESIONES_SLUGS
+        value: basketball:wnba
+      # Tenis: superficie y forma con el dataset abierto de Jeff Sackmann (CC BY-NC-SA, uso no comercial).
+      - key: TENIS_CONTEXTO_ACTIVO
+        value: "1"
+      - key: TENIS_ANIOS
+        value: "2"
 
       # TheSportsDB V1 gratuito usa key 123, con respuestas limitadas por endpoint.
       # Para fixtures fiables configurar IDs verificados como femeninos, por deporte.

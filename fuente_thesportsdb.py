@@ -24,6 +24,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+import libro_resultados as L
 import utilidades as U
 
 API_KEY = (os.environ.get("THESPORTSDB_KEY") or "123").strip() or "123"
@@ -333,7 +334,7 @@ def _normalizar_terminado(ev, ahora_ts):
     }
 
 
-def _ultimos_partidos(team_id):
+def _ultimos_partidos(team_id, deporte=None):
     """Ãšltimos partidos terminados del equipo (formato interno, mÃ¡s reciente primero)."""
     team_id = str(team_id)
     hit, valor = _cache_forma.get(team_id)
@@ -356,6 +357,8 @@ def _ultimos_partidos(team_id):
         if p and team_id in (p["id_local"], p["id_visita"]):
             partidos.append(p)
     partidos.sort(key=lambda p: p["fecha"], reverse=True)
+    if deporte and partidos:
+        L.ingestar(deporte, partidos, "thesportsdb")
     if crudos and not partidos:
         _avisar_una_vez(("forma", team_id), f"[thesportsdb] eventslast del equipo {team_id}: {len(crudos)} items sin forma esperada")
     _cache_forma.set(team_id, partidos, ttl=None if partidos else 3600)
@@ -384,7 +387,7 @@ def historial_equipo(evento, lado):
     equipo_id = str((evento.get(lado) or {}).get("id") or "")
     if not equipo_id.isdigit():
         return []
-    return _ultimos_partidos(equipo_id)
+    return _ultimos_partidos(equipo_id, evento.get("deporte"))
 
 
 def _alias(equipo):
@@ -439,5 +442,5 @@ def obtener_forma_reciente(nombre_equipo, deporte="Soccer", limite=8, id_interno
     equipo_id = _buscar_equipo(nombre_equipo, deporte)
     if not equipo_id:
         return []
-    partidos = _ultimos_partidos(equipo_id)[:max(1, int(limite))]
+    partidos = _ultimos_partidos(equipo_id, deporte)[:max(1, int(limite))]
     return _con_id_interno(partidos, equipo_id, id_interno)
