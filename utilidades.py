@@ -1,4 +1,4 @@
-"""
+﻿"""
 utilidades.py
 Funciones compartidas por todo el radar:
 - Hora de Argentina (zona horaria real, no la del servidor).
@@ -7,6 +7,7 @@ Funciones compartidas por todo el radar:
 - Cache con vencimiento.
 - Persistencia de partidos ya vistos (Upstash Redis o archivo en DATA_DIR).
 - NormalizaciÃ³n y comparaciÃ³n de nombres de equipos / jugadoras.
+- RedacciÃ³n automÃ¡tica de claves y tokens en los logs.
 """
 
 import json
@@ -58,8 +59,20 @@ def formatear_hora_arg(ts):
     return ts_a_arg(ts).strftime("%d/%m %H:%M hs (ARG)")
 
 
+_RE_SECRETO = re.compile(
+    r"(?i)\b(api[_-]?key|apikey|key|token|access_token|x-apisports-key|x-rapidapi-key)=([^&\s'\"<>]+)"
+)
+_RE_BOT_TELEGRAM = re.compile(r"/bot\d{5,}:[A-Za-z0-9_-]{20,}")
+
+
+def redactar(texto):
+    """Oculta claves y tokens que puedan aparecer en URLs o mensajes de error."""
+    texto = _RE_SECRETO.sub(lambda m: f"{m.group(1)}=***", str(texto))
+    return _RE_BOT_TELEGRAM.sub("/bot***", texto)
+
+
 def log(msg):
-    print(f"[{ahora_arg().strftime('%d/%m %H:%M:%S')}] {msg}", flush=True)
+    print(f"[{ahora_arg().strftime('%d/%m %H:%M:%S')}] {redactar(msg)}", flush=True)
 
 
 if curl_requests is None:
@@ -121,6 +134,10 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
             if clave not in _avisos_curl:
                 _avisos_curl.add(clave)
                 log(f"[{fuente}] curl_cffi fallÃ³ ({type(e_curl).__name__}: {str(e_curl)[:120]}); uso requests")
+            if "timeout" in type(e_curl).__name__.lower() or "timed out" in str(e_curl).lower():
+                # Reintentar con requests duplicarÃ­a la espera sobre el mismo servidor lento.
+                _registrar(fuente, "error_red")
+                return None
     try:
         return requests.get(url, headers=base, params=params, timeout=timeout, proxies=proxies)
     except requests.RequestException as e:
@@ -129,8 +146,16 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
         return None
 
 
+ESTADOS_TRANSITORIOS = (502, 503, 504)
+
+
 def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None):
     r = _pedir(url, headers, params, timeout, proxies, fuente)
+    if r is not None and r.status_code in ESTADOS_TRANSITORIOS:
+        _registrar(fuente, r.status_code)
+        log(f"[{fuente}] HTTP {r.status_code} transitorio en {url.split('?')[0]}; un reintento")
+        time.sleep(1.5)
+        r = _pedir(url, headers, params, timeout, proxies, fuente)
     if r is None:
         return None
 
@@ -172,24 +197,27 @@ def get_texto(url, fuente, headers=None, params=None, timeout=15):
 # CACHE CON VENCIMIENTO
 # ---------------------------------------------------------------------------
 class CacheTTL:
+    """Cache en memoria. `set(..., ttl=)` permite un vencimiento propio (p. ej. fallos de 5 min)."""
+
     def __init__(self, ttl_segundos):
         self.ttl = ttl_segundos
         self._datos = {}
 
     def get(self, clave):
         item = self._datos.get(clave)
-        if item and (time.time() - item[0]) < self.ttl:
+        if item and time.time() < item[2]:
             return True, item[1]
         return False, None
 
-    def set(self, clave, valor):
-        self._datos[clave] = (time.time(), valor)
+    def set(self, clave, valor, ttl=None):
+        ahora = time.time()
+        self._datos[clave] = (ahora, valor, ahora + (self.ttl if ttl is None else ttl))
         if len(self._datos) > 2000:
             self.limpiar()
 
     def limpiar(self):
         ahora = time.time()
-        self._datos = {k: v for k, v in self._datos.items() if (ahora - v[0]) < self.ttl}
+        self._datos = {k: v for k, v in self._datos.items() if ahora < v[2]}
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +226,7 @@ class CacheTTL:
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 UPSTASH_URL = (os.environ.get("UPSTASH_REDIS_REST_URL") or "").strip()
 UPSTASH_TOKEN = (os.environ.get("UPSTASH_REDIS_REST_TOKEN") or "").strip()
-_UPSTASH_ULTIMO_OK = None  # None = todavía no se probó en este proceso
+_UPSTASH_ULTIMO_OK = None  # None = todavÃ­a no se probÃ³ en este proceso
 
 
 def usa_upstash():
@@ -206,7 +234,7 @@ def usa_upstash():
 
 
 def persistencia_es_duradera():
-    # No anunciar persistencia remota sana si ya falló una operación de Upstash.
+    # No anunciar persistencia remota sana si ya fallÃ³ una operaciÃ³n de Upstash.
     # El primer GET de RegistroVistos sucede al importar main, antes del aviso de inicio.
     if usa_upstash():
         return _UPSTASH_ULTIMO_OK is not False
@@ -423,7 +451,7 @@ def nombres_coinciden(a, b):
 _RE_FEM = re.compile(
     r"\b(women|womens|woman|wom|female|femenino|femenina|femenil|femeni|feminino|feminina|"
     r"feminin|feminine|femminile|fem|frauen|damen|dames|ladies|vrouwen|kvinde\w*|kvinnor|"
-    r"damallsvenskan|toppserien|wta|wnba|nwsl|wsl|itf w|we league|liga f|"
+    r"damallsvenskan|toppserien|wta|wnba|wnbl|pwhl|aflw|nrlw|wbbl|nwsl|wsl|itf w|we league|liga f|"
     r"w\s?(15|25|35|50|60|75|80|100))\b"
 )
 _RE_EQUIPO_W = re.compile(r"\bw$")  # "Arsenal W", "Barcelona (W)"
@@ -445,6 +473,18 @@ def es_femenino(torneo="", local="", visita=""):
     return False
 
 
+def firma_equipo(nombre):
+    """Firma estable de un equipo/jugadora: tokens significativos ordenados."""
+    toks = sorted(tokens_significativos(nombre))
+    return "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
+
+
+def firma_partido(local, visita):
+    """Firma del cruce sin importar quiÃ©n figura de local en cada proveedor."""
+    a, b = sorted((firma_equipo(local), firma_equipo(visita)))
+    return f"{a}|{b}"
+
+
 def clave_partido(local, visita, start_ts):
     """
     Clave estable para no alertar dos veces el mismo partido que llega de dos fuentes distintas
@@ -461,37 +501,62 @@ def clave_partido(local, visita, start_ts):
 # ---------------------------------------------------------------------------
 # HISTORIAL, H2H Y TABLA UNIFICADOS (prueban varias fuentes en orden)
 # ---------------------------------------------------------------------------
-def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football):
+MIN_HISTORIAL_UTIL = 4  # el motor necesita al menos 4 partidos recientes para puntuar la forma
+
+
+def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuente_oddspapi,
+                            fuente_api_football, fuente_thesportsdb=None, modo="todo"):
     """
     Historial de un equipo (`lado` = "local" o "visita") en formato interno, o [].
-    Orden: 1) la fuente de la que vino el evento (ESPN, API-Sports, Highlightly u OddsPapi);
-    2) Highlightly buscando el equipo por nombre (los ids se reescriben a los del evento).
+    Orden (se corta apenas una fuente da al menos MIN_HISTORIAL_UTIL partidos; si ninguna llega,
+    se devuelve el historial mÃ¡s largo encontrado):
+      1) la fuente de la que vino el evento (Highlightly, API-Sports, OddsPapi, TheSportsDB o ESPN);
+      2) TheSportsDB buscando el equipo por nombre (gratis, sin cuota diaria);
+      3) Highlightly buscando el equipo por nombre (consume cuota).
+    En los puntos 2 y 3 los ids se reescriben a los del evento.
+    `modo` = "propia" (solo el punto 1), "nombre" (solo los puntos 2 y 3) o "todo".
     """
     fuente = evento.get("fuente")
-    propias = {"espn": fuente_espn, "api_sports": fuente_api_football,
-               "highlightly": fuente_highlightly, "oddspapi": fuente_oddspapi}
-    modulo = propias.get(fuente)
+    propias = {"espn": fuente_espn, "api_sports": fuente_api_football, "highlightly": fuente_highlightly,
+               "oddspapi": fuente_oddspapi, "thesportsdb": fuente_thesportsdb}
+    mejor = []
+    equipo = evento.get(lado) or {}
+    deporte = evento.get("deporte", "Soccer")
+
+    def suficiente(partidos):
+        nonlocal mejor
+        if partidos and len(partidos) > len(mejor):
+            mejor = partidos
+        return len(mejor) >= MIN_HISTORIAL_UTIL
+
+    modulo = propias.get(fuente) if modo in ("propia", "todo") else None
     if modulo is not None and hasattr(modulo, "historial_equipo"):
         try:
-            partidos = modulo.historial_equipo(evento, lado)
-            if partidos:
-                return partidos
+            if suficiente(modulo.historial_equipo(evento, lado)):
+                return mejor
         except Exception as e:
             log(f"[historial] {fuente} fallÃ³ para {evento.get('id')}: {type(e).__name__}")
 
-    if fuente != "highlightly" and fuente_highlightly and fuente_highlightly.disponible():
+    por_nombre = modo in ("nombre", "todo")
+    if por_nombre and fuente != "thesportsdb" and fuente_thesportsdb and equipo.get("nombre"):
         try:
-            equipo = evento.get(lado) or {}
+            if hasattr(fuente_thesportsdb, "historial_disponible") and fuente_thesportsdb.historial_disponible():
+                if suficiente(fuente_thesportsdb.obtener_forma_reciente(
+                        equipo["nombre"], deporte, limite=8, id_interno=equipo.get("id"))):
+                    return mejor
+        except Exception as e:
+            log(f"[historial] TheSportsDB fallÃ³ para {evento.get('id')}: {type(e).__name__}")
+
+    if por_nombre and fuente != "highlightly" and fuente_highlightly and fuente_highlightly.disponible():
+        try:
             if equipo.get("nombre"):
-                partidos = fuente_highlightly.obtener_forma_reciente(
-                    equipo["nombre"], evento.get("deporte", "Soccer"), limite=6, id_interno=equipo.get("id")
-                )
-                if partidos:
-                    return partidos
+                if suficiente(fuente_highlightly.obtener_forma_reciente(
+                        equipo["nombre"], deporte, limite=6, id_interno=equipo.get("id"))):
+                    return mejor
         except Exception as e:
             log(f"[historial] Highlightly fallÃ³ para {evento.get('id')}: {type(e).__name__}")
 
-    return []
+    return mejor
 
 
 def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita):

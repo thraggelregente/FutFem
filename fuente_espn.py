@@ -1,7 +1,9 @@
-"""
+﻿"""
 fuente_espn.py
-ESPN (API pública, sin clave): fuente de respaldo y ranking WTA; no es proveedor principal.
-Ligas femeninas verificadas en producciÃ³n.
+ESPN (API pÃºblica, sin clave): fuente de RESPALDO y ranking WTA; nunca es el proveedor principal
+(en main.py tiene la menor prioridad salvo en tenis, donde es la Ãºnica con ranking).
+Ligas femeninas verificadas en producciÃ³n. Los fallos transitorios se cachean pocos minutos para
+que una caÃ­da momentÃ¡nea no deje al radar sin calendario durante horas.
 """
 
 import os
@@ -49,6 +51,7 @@ _cache_proximos = U.CacheTTL(max(10, int(os.environ.get("ESPN_SCOREBOARD_CACHE_M
 _cache_dia_pasado = U.CacheTTL(24 * 3600)
 _cache_historial = U.CacheTTL(6 * 3600)
 _cache_ranking = U.CacheTTL(12 * 3600)
+TTL_FALLO = 5 * 60  # un error de red/HTTP se reintenta a los 5 minutos, no a las 3 horas
 
 
 def _ligas_configuradas():
@@ -78,7 +81,7 @@ def _scoreboard(sport, slug, fechas, cache, limit=None):
         params["limit"] = limit
     data = U.get_json(f"{BASE}/{sport}/{slug}/scoreboard", FUENTE, params=params, timeout=12)
     data = data if isinstance(data, dict) else None
-    cache.set(clave, data)
+    cache.set(clave, data, ttl=None if data is not None else TTL_FALLO)
     return data
 
 
@@ -161,7 +164,8 @@ def ranking_wta():
                 mapa[str(ath["id"])] = pos
     except Exception:
         mapa = {}
-    _cache_ranking.set("wta", mapa)
+    # Un ranking vacÃ­o (fallo de ESPN) no se cachea 12 h: dejarÃ­a al tenis ciego medio dÃ­a.
+    _cache_ranking.set("wta", mapa, ttl=None if mapa else TTL_FALLO * 2)
     return mapa
 
 
@@ -276,7 +280,9 @@ def _eventos_pasados(sport, slug):
     rango = f"{desde}-{hasta}"
     for limite in (1000, None):
         data = _scoreboard(sport, slug, rango, _cache_dia_pasado, limit=limite)
-        eventos = (data or {}).get("events") or []
+        if data is None:
+            return []  # ESPN no respondiÃ³: no se dispara el barrido dÃ­a por dÃ­a (45 pedidos inÃºtiles)
+        eventos = data.get("events") or []
         if eventos:
             return eventos
     U.log(f"[espn] {slug}: el rango de fechas no devolviÃ³ datos; pido dÃ­a por dÃ­a ({DIAS_HISTORIAL} pedidos)")
@@ -309,7 +315,7 @@ def _historial_liga(sport, slug):
         lista.sort(key=lambda p: p["fecha"], reverse=True)
 
     U.log(f"[espn] historial {slug}: {len(vistos)} partidos, {len(por_equipo)} equipos")
-    _cache_historial.set(clave, por_equipo)
+    _cache_historial.set(clave, por_equipo, ttl=None if por_equipo else TTL_FALLO * 2)
     return por_equipo
 
 

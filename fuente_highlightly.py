@@ -1,4 +1,4 @@
-"""
+﻿"""
 fuente_highlightly.py
 Highlightly (https://highlightly.net/): fuente de EVENTOS femeninos y de datos de profundidad.
 
@@ -8,6 +8,11 @@ QuÃ© aporta (deportes: Soccer, Basketball, Ice Hockey, Handball, Volleyball):
 - H2H por equipo (GET /head-2-head?teamIdOne=&teamIdTwo=). Los ids se resuelven por nombre (GET /teams?name=).
 - Tabla de posiciones (GET /standings?leagueId=&season=). La liga se deduce de los Ãºltimos partidos
   que comparten los dos equipos.
+
+Cobertura: el listado por fecha trae solo HIGHLIGHTLY_MAX_PAGINAS pÃ¡ginas de 100 partidos (todas las ligas
+mezcladas, sin filtro de gÃ©nero), asÃ­ que en dÃ­as cargados puede dejar afuera partidos femeninos. Para
+cubrir de forma exhaustiva las competiciones que importan, cargar sus IDs en HIGHLIGHTLY_WOMENS_LEAGUES
+(Soccer:ID;Volleyball:ID): cada una se consulta directo con /matches?date=&leagueId= (1 request por liga y fecha).
 
 AutenticaciÃ³n: header x-rapidapi-key con la clave de Highlightly (HIGHLIGHTLY_API_KEY).
 Hosts: cada deporte tiene su host propio (soccer.highlightly.net, volleyball.highlightly.net, ...) y
@@ -21,6 +26,7 @@ HIGHLIGHTLY_RESERVA_ANALISIS requests, que quedan reservados para forma / H2H / 
 
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import utilidades as U
@@ -125,11 +131,11 @@ def _bases(deporte):
 
 
 def _get(deporte, ruta, params=None):
-    """Devuelve JSON o None; tras 403/404 alterna host una vez y enfría el endpoint."""
+    """Devuelve JSON o None; tras 403/404 alterna host una vez y enfrÃ­a el endpoint."""
     if not disponible() or deporte not in _DEPORTES_HL:
         return None
     clave_cooldown = (deporte, ruta)
-    if __import__("time").time() < _reintentar_despues.get(clave_cooldown, 0):
+    if time.time() < _reintentar_despues.get(clave_cooldown, 0):
         return None
     estados_vistos = []
     for base, prefijo in _bases(deporte):
@@ -163,16 +169,14 @@ def _get(deporte, ruta, params=None):
             estados_vistos.append(status)
             continue
         if data is None:
-            import time
             _reintentar_despues[clave_cooldown] = time.time() + 15 * 60
             return None
         _base_ok[deporte] = (base, prefijo)
         _reintentar_despues.pop(clave_cooldown, None)
         return data
-    import time
     if estados_vistos and all(estado in (403, 404) for estado in estados_vistos):
         _reintentar_despues[clave_cooldown] = time.time() + 3 * 3600
-        _avisar_una_vez(("hosts", deporte, ruta), f"[highlightly/{deporte}] ambos hosts rechazaron {ruta}; se reintentará en 3 h")
+        _avisar_una_vez(("hosts", deporte, ruta), f"[highlightly/{deporte}] ambos hosts rechazaron {ruta}; se reintentarÃ¡ en 3 h")
     elif estados_vistos:
         _reintentar_despues[clave_cooldown] = time.time() + 15 * 60
     return None
@@ -267,11 +271,11 @@ def _items_del_dia(deporte, fecha):
     if presupuesto.restantes() <= RESERVA_ANALISIS:
         return []  # lo que queda se reserva para forma / H2H / tablas; no se cachea
     items, offset, limite, total = [], 0, 100, None
+    fallo_listado = False
     for pagina in range(MAX_PAGINAS):
         data = _get(deporte, "/matches", {"date": fecha, "limit": limite, "offset": offset})
         if data is None:
-            if pagina == 0:
-                return []  # no se cachea el fallo: se reintenta en el prÃ³ximo barrido
+            fallo_listado = fallo_listado or pagina == 0
             break
         lista = _lista(data)
         items += [n for n in (_normalizar_partido(m) for m in lista) if n]
@@ -287,7 +291,21 @@ def _items_del_dia(deporte, fecha):
             break
     if total is not None and len(items) < total:
         U.log(f"[highlightly/{deporte}] {fecha}: leÃ­ {len(items)} de {total} partidos "
-              f"(tope de {MAX_PAGINAS} pÃ¡ginas; HIGHLIGHTLY_MAX_PAGINAS lo amplÃ­a)")
+              f"(tope de {MAX_PAGINAS} pÃ¡ginas; cargÃ¡ HIGHLIGHTLY_WOMENS_LEAGUES o ampliÃ¡ HIGHLIGHTLY_MAX_PAGINAS)")
+    # Competiciones femeninas verificadas por el operador: consulta directa y exhaustiva por liga.
+    conocidos = {n["id"] for n in items}
+    for liga_id in sorted(_LIGAS_FEMENINAS.get(deporte, set())):
+        if presupuesto.restantes() <= RESERVA_ANALISIS:
+            break
+        data = _get(deporte, "/matches", {"date": fecha, "leagueId": liga_id, "limit": limite})
+        if data is None:
+            continue
+        for n in (_normalizar_partido(m) for m in _lista(data)):
+            if n and n["id"] not in conocidos:
+                conocidos.add(n["id"])
+                items.append(n)
+    if fallo_listado and not items:
+        return []  # no se cachea el fallo: se reintenta en el prÃ³ximo barrido
     _cache_eventos.set(clave, items)
     return items
 

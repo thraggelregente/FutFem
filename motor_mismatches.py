@@ -1,4 +1,4 @@
-"""
+﻿"""
 motor_mismatches.py
 Cerebro cuantitativo del Radar Femenino (simÃ©trico: el favorito puede ser local o visitante).
 
@@ -10,6 +10,8 @@ SeÃ±ales que SUMAN puntos al lado al que favorecen:
   5. Tenis: ranking / rival fuera del ranking / Wild Card -> 1-3 pts (camino aparte)
   6. Descanso (el rival jugÃ³ hace <=3 dÃ­as)              -> 0-1 pt
   8. Momentum (racha de victorias) -> solo si la forma no sumÃ³ ya para ese lado
+ 10. CongestiÃ³n de calendario (rival con >=3 partidos en 7 dÃ­as vs <=1) -> 0-1 pt, solo si el
+     descanso no sumÃ³ ya para ese mismo lado (es la misma informaciÃ³n de calendario)
 
 Las seÃ±ales 7 (bajas/lesiones) y 9 (clima) NO estÃ¡n implementadas.
 
@@ -22,6 +24,8 @@ Confianza: Media (4-5) / Alta (6-7) / Muy Alta (8+).
 
 import os
 from datetime import datetime, timezone
+
+import utilidades as U
 
 LOCAL = "Local"
 VISITA = "Visitante"
@@ -143,6 +147,16 @@ def evaluar_rendimiento_reciente(partidos, id_equipo):
 # ---------------------------------------------------------------------------
 # SEÃ‘AL 3: TRIANGULACIÃ“N
 # ---------------------------------------------------------------------------
+def _clave_rival(rival_id, rival_nombre):
+    """
+    Identifica al rival comÃºn. Se usa la firma del NOMBRE cuando existe porque los historiales de
+    local y visita pueden venir de proveedores distintos (con ids incompatibles entre sÃ­).
+    """
+    if rival_nombre:
+        return "n:" + U.firma_equipo(rival_nombre)
+    return f"i:{rival_id}" if rival_id else None
+
+
 def _triangular_direccional(partidos_a, id_a, partidos_b, id_b):
     """A le ganÃ³ a C y B perdiÃ³ con ese mismo C (Ãºltimos 90 dÃ­as)."""
     historial_a = {}
@@ -154,8 +168,9 @@ def _triangular_direccional(partidos_a, id_a, partidos_b, id_b):
         rival_nom = p.get("nom_visita") if es_local else p.get("nom_local")
         pts_prop = p.get("puntos_local") if es_local else p.get("puntos_visita")
         pts_riv = p.get("puntos_visita") if es_local else p.get("puntos_local")
-        if rival_id and rival_id != id_b and pts_prop is not None and pts_riv is not None:
-            historial_a.setdefault(rival_id, {
+        clave_rival = _clave_rival(rival_id, rival_nom)
+        if clave_rival and rival_id != id_b and pts_prop is not None and pts_riv is not None:
+            historial_a.setdefault(clave_rival, {
                 "nombre": rival_nom, "gano": pts_prop > pts_riv, "dif": pts_prop - pts_riv
             })
 
@@ -166,16 +181,18 @@ def _triangular_direccional(partidos_a, id_a, partidos_b, id_b):
             continue
         es_local = p.get("id_local") == id_b
         rival_id = p.get("id_visita") if es_local else p.get("id_local")
-        if rival_id not in historial_a or rival_id in vistos:
+        rival_nom_b = p.get("nom_visita") if es_local else p.get("nom_local")
+        rival_clave = _clave_rival(rival_id, rival_nom_b)
+        if rival_clave not in historial_a or rival_clave in vistos:
             continue
         pts_prop = p.get("puntos_local") if es_local else p.get("puntos_visita")
         pts_riv = p.get("puntos_visita") if es_local else p.get("puntos_local")
         if pts_prop is None or pts_riv is None:
             continue
         dif_b = pts_prop - pts_riv
-        dato_a = historial_a[rival_id]
+        dato_a = historial_a[rival_clave]
         if dato_a["gano"] and dif_b < 0:
-            vistos.add(rival_id)
+            vistos.add(rival_clave)
             resultado.append({
                 "rival": dato_a["nombre"], "dif_a": dato_a["dif"],
                 "dif_b": dif_b, "brecha": dato_a["dif"] - dif_b,
@@ -325,6 +342,31 @@ def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
 
 
 # ---------------------------------------------------------------------------
+# SEÃ‘AL 10: CONGESTIÃ“N DE CALENDARIO
+# ---------------------------------------------------------------------------
+def _partidos_en_dias(partidos, dias):
+    return sum(1 for p in (partidos or [])[:8] if calcular_dias_atras(p.get("fecha", "")) <= dias)
+
+
+def evaluar_congestion(partidos_a, id_a, partidos_b, id_b, dias=7, minimo_historial=4):
+    """
+    Un equipo llega con el calendario cargado (>=3 partidos en `dias` dÃ­as) y el otro con poca
+    actividad (<=1). Se exige historial de al menos `minimo_historial` partidos en el lado liviano
+    para que "<=1" sea un dato real y no un historial recortado por el proveedor.
+    """
+    if len(partidos_a or []) < minimo_historial or len(partidos_b or []) < minimo_historial:
+        return None
+    n_a, n_b = _partidos_en_dias(partidos_a, dias), _partidos_en_dias(partidos_b, dias)
+    if n_b >= 3 and n_a <= 1:
+        return {"favorito": LOCAL, "n_a": n_a, "n_b": n_b,
+                "detalle": f"Calendario: visita jugÃ³ {n_b} partidos en {dias} dÃ­as vs {n_a} del local"}
+    if n_a >= 3 and n_b <= 1:
+        return {"favorito": VISITA, "n_a": n_a, "n_b": n_b,
+                "detalle": f"Calendario: local jugÃ³ {n_a} partidos en {dias} dÃ­as vs {n_b} de la visita"}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SEÃ‘AL 8: MOMENTUM (racha)
 # ---------------------------------------------------------------------------
 def evaluar_momentum(partidos, id_equipo):
@@ -424,6 +466,13 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
     if datos_extra and datos_extra.get("descanso"):
         d = datos_extra["descanso"]
         sumar(d["favorito"], 1, d["detalle"])
+
+    # SeÃ±al 10: CongestiÃ³n de calendario (0-1 pt); no se suma si el descanso ya favoreciÃ³ al mismo lado
+    if datos_extra and datos_extra.get("congestion"):
+        c = datos_extra["congestion"]
+        d = datos_extra.get("descanso")
+        if not (d and d.get("favorito") == c["favorito"]):
+            sumar(c["favorito"], 1, c["detalle"])
 
     # SeÃ±al 8: Momentum (0-2 pts)
     if datos_extra:

@@ -1,4 +1,4 @@
-services:
+﻿services:
   - type: web
     name: radar-femenino-bot
     env: python
@@ -24,7 +24,7 @@ services:
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
 
-      # API-Sports: clave opcional; límite diario compartido por deportes.
+      # API-Sports: clave opcional; lÃ­mite diario compartido por deportes.
       - key: API_FOOTBALL_KEY
         sync: false
       - key: API_SPORTS_DEPORTES
@@ -35,11 +35,11 @@ services:
         value: "100"
       - key: API_FOOTBALL_RESERVA
         value: "12"
-      # IDs de competición femenina para nombres neutrales. Agregar solo IDs verificados.
+      # IDs de competiciÃ³n femenina para nombres neutrales. Agregar solo IDs verificados.
       - key: API_SPORTS_WOMENS_LEAGUES
         value: ""
 
-      # Highlightly: clave opcional; cobertura de eventos y profundidad según el plan.
+      # Highlightly: clave opcional; cobertura de eventos y profundidad segÃºn el plan.
       - key: HIGHLIGHTLY_API_KEY
         sync: false
       - key: HIGHLIGHTLY_DEPORTES
@@ -80,8 +80,21 @@ services:
         value: "240"
       - key: ODDSPAPI_PROFUNDIDAD
         value: "0"
-      # Agregar solo IDs que estén verificados como torneos femeninos.
+      # Agregar solo IDs que estÃ©n verificados como torneos femeninos.
       - key: ODDSPAPI_WOMENS_TOURNAMENT_IDS
+        value: ""
+
+      # The Odds API: SOLO fixtures (/sports y /events, sin costo de cuota). No se piden cuotas ni mercados.
+      - key: ODDS_API_KEY
+        sync: false
+      - key: THEODDSAPI_DEPORTES
+        value: Soccer,Basketball,Ice Hockey,Handball,Volleyball,Rugby
+      - key: THEODDSAPI_VENTANA_HORAS
+        value: "30"
+      - key: THEODDSAPI_CACHE_MINUTOS
+        value: "45"
+      # Competiciones femeninas verificadas que no tengan marca visible en el catÃ¡logo (opcional).
+      - key: THEODDSAPI_EXTRA_SPORT_KEYS
         value: ""
 
       # TheSportsDB V1 gratuito usa key 123, con respuestas limitadas por endpoint.
@@ -95,9 +108,14 @@ services:
         value: "0"
       - key: THESPORTSDB_CACHE_MINUTOS
         value: "240"
+      # Historial gratuito por equipo (eventslast/searchteams) y tope de pedidos por minuto (lÃ­mite: 30).
+      - key: THESPORTSDB_HISTORIAL
+        value: "1"
+      - key: THESPORTSDB_MAX_PEDIDOS_MINUTO
+        value: "24"
 
       # OpenLigaDB: gratis, sin API key; por defecto Frauen-Bundesliga de la temporada 2026.
-      # Formato: shortcut:temporada; confirmar temporada/shortcut al cambiar de año.
+      # Formato: shortcut:temporada; confirmar temporada/shortcut al cambiar de aÃ±o.
       - key: OPENLIGADB_WOMENS_LEAGUES
         value: "ffb1:2026"
       - key: OPENLIGADB_CACHE_MINUTOS
@@ -105,7 +123,7 @@ services:
       - key: OPENLIGADB_VENTANA_HORAS
         value: "36"
 
-      # ESPN es respaldo (incluye WTA/rankings); los otros proveedores tienen mayor prioridad.
+      # ESPN es respaldo de menor prioridad (Ãºnica fuente de ranking WTA); los otros proveedores van primero.
       - key: ESPN_ACTIVO
         value: "1"
       - key: ESPN_SCOREBOARD_CACHE_MINUTES
@@ -113,12 +131,18 @@ services:
       - key: ESPN_HIST_DIAS
         value: "45"
 
-      # Frecuencia. El servicio Free de Render puede dormir si no recibe tráfico externo.
+      # Frecuencia. El servicio Free de Render puede dormir si no recibe trÃ¡fico externo.
       - key: INTERVALO_REVISION
         value: "900"
       - key: HORAS_VENTANA_PREVIA
         value: "24"
       - key: MAX_ANALISIS_POR_CICLO
         value: "100"
-      - key: ACTIVAR_MONITOR_NOTICIAS
-        value: "0"
+      # Eventos solo-calendario (sin historial propio): tope de bÃºsquedas por nombre por ciclo y
+      # enfriamiento tras un [sin-datos] (backoff 60 -> 120 -> 240 -> 360 min).
+      - key: MAX_BUSQUEDAS_POR_NOMBRE
+        value: "15"
+      - key: ENFRIAMIENTO_SIN_DATOS_MIN
+        value: "60"
+      - key: ENFRIAMIENTO_MAX_MIN
+        value: "360"
