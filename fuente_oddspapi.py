@@ -1,4 +1,4 @@
-﻿"""OddsPapi V4 como fuente de fixtures deportivos, sin consumir datos de cuotas.
+"""OddsPapi V4 como fuente de fixtures deportivos, sin consumir datos de cuotas.
 
 ÃšNICA ruta billable usada por defecto: GET /v4/fixtures. No se consultan ni
 almacenan odds, mercados, bookmakers, mÃ¡rgenes o probabilidades implÃ­citas.
@@ -169,9 +169,9 @@ def _get(ruta, params=None, exigir=1):
     parametros = dict(params or {})
     parametros["apiKey"] = API_KEY
     info = {}
-    data = U.get_json(f"{BASE}{ruta}", FUENTE, headers=_headers(), params=parametros, timeout=20, info=info)
+    data = U.get_json(f"{BASE}{ruta}", FUENTE, headers=_headers(), params=parametros, timeout=20, info=info, reintentar=False)
     status = info.get("status")
-    if not es_account and status is not None:
+    if not es_account:
         presupuesto.registrar(1)
         U.log(f"[oddspapi] request {ruta} registrado: {presupuesto.resumen()}")
     if status == 429:

@@ -1,4 +1,4 @@
-﻿"""Contexto de tenis WTA: efectividad por superficie y forma reciente.
+"""Contexto de tenis WTA: efectividad por superficie y forma reciente.
 
 Fuente: dataset abierto de Jeff Sackmann (github.com/JeffSackmann/tennis_wta, licencia CC BY-NC-SA 4.0,
 uso no comercial), descargado como CSV desde raw.githubusercontent.com. No se evade ningÃºn control de
@@ -25,7 +25,9 @@ from datetime import datetime, timezone
 
 import utilidades as U
 
-BASE = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_{anio}.csv"
+BASE = os.environ.get("TENIS_DATASET_URL", "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_{anio}.csv")
+ESTADO = {"disponible": False, "ultima_fecha": None}
+_avisado = False
 ACTIVO = os.environ.get("TENIS_CONTEXTO_ACTIVO", "1").strip().lower() not in {"0", "false", "no", "off"}
 ANIOS = max(1, min(4, int(os.environ.get("TENIS_ANIOS", "2"))))
 VENTANA_FORMA_DIAS = 120
@@ -96,6 +98,7 @@ def _cargar_anio(anio):
 
 
 def _indice():
+    global _avisado
     hit, valor = _cache.get("indice")
     if hit:
         return valor
@@ -107,6 +110,14 @@ def _indice():
             indice.setdefault(perdedora, []).append((ts, superficie, False))
     for lista in indice.values():
         lista.sort(key=lambda x: x[0], reverse=True)
+    ultima = max((ts for partidos in indice.values() for ts, _s, _g in partidos), default=0)
+    vigente = bool(ultima and time.time() - ultima <= 45 * 86400)
+    ESTADO.update(disponible=vigente, ultima_fecha=U.ts_a_iso_utc(ultima) if ultima else None)
+    if not vigente:
+        indice = {}
+        if not _avisado:
+            U.log("[tenis/contexto] no hay dataset reciente validado; forma/superficie deshabilitadas, no son señales neutrales")
+            _avisado = True
     _cache.set("indice", indice, ttl=None if indice else 30 * 60)
     return indice
 
@@ -146,7 +157,7 @@ def evaluar_contexto(nombre_favorita, nombre_rival, torneo=""):
     Contexto de la favorita POR RANKING frente a su rival:
     {"favorita_ventaja": -2..2, "detalles": [...], "superficie": "Clay"|...|""}. Sin datos suficientes: ventaja 0.
     """
-    vacio = {"favorita_ventaja": 0, "detalles": [], "superficie": ""}
+    vacio = {"favorita_ventaja": 0, "detalles": [], "superficie": "", "disponible": False}
     if not ACTIVO:
         return vacio
     superficie = superficie_torneo(torneo)
@@ -172,4 +183,4 @@ def evaluar_contexto(nombre_favorita, nombre_rival, torneo=""):
         elif brecha <= -0.20 or pf["sup_wr"] < 0.40:
             ventaja -= 1
             detalles.append(f"Alerta de superficie ({superficie}): favorita {round(pf['sup_wr'] * 100)}% vs rival {round(pr['sup_wr'] * 100)}%")
-    return {"favorita_ventaja": max(-2, min(2, ventaja)), "detalles": detalles, "superficie": superficie}
+    return {"favorita_ventaja": max(-2, min(2, ventaja)), "detalles": detalles, "superficie": superficie, "disponible": bool(pf["forma_n"] >= MIN_FORMA and pr["forma_n"] >= MIN_FORMA)}

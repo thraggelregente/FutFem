@@ -37,6 +37,32 @@ def _otro(lado):
     return VISITA if lado == LOCAL else LOCAL
 
 
+def _pertenece(p, id_equipo):
+    return id_equipo is not None and str(id_equipo) in {str(p.get("id_local")), str(p.get("id_visita"))}
+
+
+def historial_valido(partidos, id_equipo, max_dias=90):
+    salida = []
+    vistos = set()
+    for p in partidos or []:
+        if not _pertenece(p, id_equipo):
+            continue
+        try:
+            fecha = datetime.fromisoformat(str(p.get("fecha", "")).replace("Z", "+00:00"))
+            if fecha.tzinfo is None:
+                fecha = fecha.replace(tzinfo=timezone.utc)
+            edad = (datetime.now(timezone.utc) - fecha).total_seconds() / 86400
+            if not 0 <= edad <= max_dias or p.get("puntos_local") is None or p.get("puntos_visita") is None:
+                continue
+            clave = (fecha.isoformat(), str(p.get("id_local")), str(p.get("id_visita")))
+            if clave not in vistos:
+                vistos.add(clave)
+                salida.append(p)
+        except (ValueError, TypeError):
+            continue
+    return sorted(salida, key=lambda p: p["fecha"], reverse=True)
+
+
 def calcular_dias_atras(fecha_str):
     try:
         f = datetime.fromisoformat(str(fecha_str).replace("Z", "+00:00"))
@@ -102,17 +128,19 @@ def evaluar_tabla_posiciones(tabla_data, id_local, id_visita, n_equipos=None):
 
 
 def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
-    vacio = {"dif_prom": 0.0, "victorias": 0, "derrotas": 0, "muestras": 0}
+    vacio = {"dif_prom": 0.0, "victorias": 0, "derrotas": 0, "muestras": 0,
+             "dias_ultimo": None, "dias_mas_antiguo": None}
     if not partidos:
         return vacio
 
     tope = TOPE_DIFERENCIA.get(deporte)
     suma_pesada, suma_pesos, victorias, derrotas, muestras = 0.0, 0.0, 0, 0, 0
-    for p in partidos[:6]:
+    edades = []
+    for p in historial_valido(partidos, id_equipo)[:6]:
         dias = calcular_dias_atras(p.get("fecha", ""))
         if dias > 90:
             continue
-        es_local_hist = p.get("id_local") == id_equipo
+        es_local_hist = str(p.get("id_local")) == str(id_equipo)
         pts_prop = p.get("puntos_local") if es_local_hist else p.get("puntos_visita")
         pts_riv = p.get("puntos_visita") if es_local_hist else p.get("puntos_local")
         if pts_prop is None or pts_riv is None:
@@ -126,6 +154,7 @@ def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
         suma_pesada += dif_ajustada * peso
         suma_pesos += peso
         muestras += 1
+        edades.append(dias)
         if dif > 0:
             victorias += 1
         elif dif < 0:
@@ -136,6 +165,7 @@ def evaluar_rendimiento_reciente(partidos, id_equipo, deporte=None):
     return {
         "dif_prom": round(suma_pesada / suma_pesos, 2),
         "victorias": victorias, "derrotas": derrotas, "muestras": muestras,
+        "dias_ultimo": min(edades), "dias_mas_antiguo": max(edades),
     }
 
 
@@ -147,10 +177,10 @@ def _clave_rival(rival_id, rival_nombre):
 
 def _triangular_direccional(partidos_a, id_a, partidos_b, id_b):
     historial_a = {}
-    for p in partidos_a[:8]:
+    for p in historial_valido(partidos_a, id_a)[:8]:
         if calcular_dias_atras(p.get("fecha", "")) > 90:
             continue
-        es_local = p.get("id_local") == id_a
+        es_local = str(p.get("id_local")) == str(id_a)
         rival_id = p.get("id_visita") if es_local else p.get("id_local")
         rival_nom = p.get("nom_visita") if es_local else p.get("nom_local")
         pts_prop = p.get("puntos_local") if es_local else p.get("puntos_visita")
@@ -163,10 +193,10 @@ def _triangular_direccional(partidos_a, id_a, partidos_b, id_b):
 
     resultado = []
     vistos = set()
-    for p in partidos_b[:8]:
+    for p in historial_valido(partidos_b, id_b)[:8]:
         if calcular_dias_atras(p.get("fecha", "")) > 90:
             continue
-        es_local = p.get("id_local") == id_b
+        es_local = str(p.get("id_local")) == str(id_b)
         rival_id = p.get("id_visita") if es_local else p.get("id_local")
         rival_nom_b = p.get("nom_visita") if es_local else p.get("nom_local")
         rival_clave = _clave_rival(rival_id, rival_nom_b)
@@ -199,7 +229,9 @@ def analizar_h2h_extendido(historial_h2h, id_local, id_visita):
     h2h_medio = []
     h2h_viejo = []
 
-    for p in historial_h2h or []:
+    for p in historial_valido(historial_h2h, id_local, max_dias=365 * 3):
+        if not _pertenece(p, id_visita):
+            continue
         dias = calcular_dias_atras(p.get("fecha", ""))
         if dias > 365 * 3:
             continue
@@ -207,7 +239,7 @@ def analizar_h2h_extendido(historial_h2h, id_local, id_visita):
         pts_vis = p.get("puntos_visita")
         if pts_loc is None or pts_vis is None:
             continue
-        es_local_hist = p.get("id_local") == id_local
+        es_local_hist = str(p.get("id_local")) == str(id_local)
         pts_nuestro_local = pts_loc if es_local_hist else pts_vis
         pts_nuestro_visita = pts_vis if es_local_hist else pts_loc
         if pts_nuestro_local > pts_nuestro_visita:
@@ -248,43 +280,31 @@ def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
                            entry_local=None, entry_visita=None,
                            fuera_local=False, fuera_visita=False, corte_ranking=None):
     rl, rv = _rank_valido(rank_local), _rank_valido(rank_visita)
-    wc_l, wc_v = _es_wc(nombre_local, entry_local), _es_wc(nombre_visita, entry_visita)
 
-    def efectivo(rk, fuera):
-        if rk is not None:
-            return rk, True
-        if fuera and corte_ranking:
-            return int(corte_ranking) + 1, False
-        return None, False
-
-    for lado, nom_f, rk_f, nom_r, rk_r, wc_r, fuera_r in (
-        (LOCAL, nombre_local, rl, nombre_visita, rv, wc_v, fuera_visita),
-        (VISITA, nombre_visita, rv, nombre_local, rl, wc_l, fuera_local),
+    # Ranking desconocido no equivale a estar fuera de un top truncado.
+    for lado, nom_f, rk_f, nom_r, rk_r in (
+        (LOCAL, nombre_local, rl, nombre_visita, rv),
+        (VISITA, nombre_visita, rv, nombre_local, rl),
     ):
-        if rk_f is None:
+        if rk_f is None or rk_r is None or rk_r <= rk_f:
             continue
-        r_eff, exacto = efectivo(rk_r, fuera_r)
-        if r_eff is None or r_eff - rk_f < 100:
-            continue
-        if rk_f <= 30 and r_eff >= 5.0 * rk_f:
-            puntos, nivel = 3, "🔴 Rojo"
-        elif rk_f <= 60 and r_eff >= 3.5 * rk_f:
-            puntos, nivel = 2, "🟠 Naranja"
-        elif rk_f <= 100 and r_eff >= 2.5 * rk_f:
-            puntos, nivel = 1, "🟡 Amarillo"
+        ratio, brecha = rk_r / rk_f, rk_r - rk_f
+        if rk_f <= 50 and ratio >= 5 and brecha >= 100:
+            puntos, nivel = 3, "Fuerte"
+        elif rk_f <= 100 and ratio >= 3 and brecha >= 60:
+            puntos, nivel = 2, "Moderada"
+        elif rk_f <= 400 and ratio >= 3 and brecha >= 200:
+            puntos, nivel = 2, "Moderada"
         else:
             continue
-
-        rival_txt = f"Rank #{rk_r}" if exacto else f"fuera del top {int(corte_ranking)} (rank > {int(corte_ranking)})"
-        wc_txt = " (Wild Card)" if wc_r else ""
-        detalle = f"{nivel}: {nom_f} (Rank #{rk_f}) vs {nom_r}{wc_txt} ({rival_txt})"
+        detalle = f"Brecha de ranking {nivel.lower()}: {nom_f} #{rk_f} vs {nom_r} #{rk_r}; requiere contexto deportivo"
         return True, detalle, lado, puntos
 
     return False, "", None, 0
 
 
 def ajustar_tenis_por_contexto(favorito_lado, ctx):
-    if not ctx:
+    if not ctx or not ctx.get("disponible"):
         return 0, []
     return max(-2, min(2, int(ctx.get("favorita_ventaja", 0)))), list(ctx.get("detalles", []))
 
@@ -297,8 +317,8 @@ def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
                 return dias
         return None
 
-    dias_a = _dias_ultimo_partido(partidos_a)
-    dias_b = _dias_ultimo_partido(partidos_b)
+    dias_a = _dias_ultimo_partido(historial_valido(partidos_a, id_a))
+    dias_b = _dias_ultimo_partido(historial_valido(partidos_b, id_b))
     if dias_a is None or dias_b is None:
         return None
 
@@ -316,6 +336,8 @@ def _partidos_en_dias(partidos, dias):
 
 
 def evaluar_congestion(partidos_a, id_a, partidos_b, id_b, dias=7, minimo_historial=4):
+    partidos_a = historial_valido(partidos_a, id_a)
+    partidos_b = historial_valido(partidos_b, id_b)
     if len(partidos_a or []) < minimo_historial or len(partidos_b or []) < minimo_historial:
         return None
     n_a, n_b = _partidos_en_dias(partidos_a, dias), _partidos_en_dias(partidos_b, dias)
@@ -330,10 +352,10 @@ def evaluar_congestion(partidos_a, id_a, partidos_b, id_b, dias=7, minimo_histor
 
 def evaluar_momentum(partidos, id_equipo):
     racha = 0
-    for p in partidos[:6]:
+    for p in historial_valido(partidos, id_equipo)[:6]:
         if calcular_dias_atras(p.get("fecha", "")) > 90:
             continue
-        es_local = p.get("id_local") == id_equipo
+        es_local = str(p.get("id_local")) == str(id_equipo)
         pts_prop = p.get("puntos_local") if es_local else p.get("puntos_visita")
         pts_riv = p.get("puntos_visita") if es_local else p.get("puntos_local")
         if pts_prop is None or pts_riv is None:
@@ -362,13 +384,13 @@ def evaluar_elo(elo):
     elo_f, elo_r = (elo["elo_local"], elo["elo_visita"]) if favorito == LOCAL else (elo["elo_visita"], elo["elo_local"])
     return {
         "favorito": favorito, "puntos": puntos,
-        "detalle": (f"Elo: {favorito} {elo_f} vs {elo_r} (prob. {round(p * 100)}% con localía; "
+        "detalle": (f"Elo: {favorito} {elo_f} vs {elo_r} (ajuste de localía; "
                     f"{elo['n_local']}/{elo['n_visita']} partidos en el libro)"),
     }
 
 
 def evaluar_plantel(bajas_local, bajas_visita, deporte):
-    if not bajas_local or not bajas_visita:
+    if not bajas_local or not bajas_visita or bajas_local.get("inferido") or bajas_visita.get("inferido"):
         return None
     umbral = UMBRAL_BAJAS.get(deporte, 3)
     fl, fv = int(bajas_local.get("fuera", 0)), int(bajas_visita.get("fuera", 0))
@@ -391,13 +413,20 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
     puntos = {LOCAL: 0, VISITA: 0}
     textos = {LOCAL: [], VISITA: []}
     grupos = {LOCAL: set(), VISITA: set()}
+    fuerza = {LOCAL: False, VISITA: False}
+    puntos_grupo = {LOCAL: {}, VISITA: {}}
+    limites_grupo = {"historial": 4, "tabla": 2, "calendario": 1, "plantel": 2}
 
     def sumar(lado, pts, texto, grupo="historial"):
-        puntos[lado] += pts
+        anterior = puntos_grupo[lado].get(grupo, 0)
+        nuevo = min(limites_grupo.get(grupo, 4), anterior + pts)
+        puntos[lado] += nuevo - anterior
+        puntos_grupo[lado][grupo] = nuevo
         textos[lado].append(texto)
         grupos[lado].add(grupo)
 
     if tabla_local_visita and tabla_local_visita.get("es_mismatch_tabla"):
+        fuerza[tabla_local_visita["favorito"]] = True
         sumar(tabla_local_visita["favorito"], 2, tabla_local_visita["detalle"], "tabla")
 
     forma_sumo = {LOCAL: False, VISITA: False}
@@ -413,6 +442,7 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                 if brecha >= umbral:
                     extra = 1 if brecha >= umbral * 2 else 0
                     forma_sumo[fav] = True
+                    fuerza[fav] = True
                     sumar(fav, 2 + extra, (
                         f"Forma: {fav} {pf['dif_prom']:+} por partido "
                         f"({pf['victorias']}V en {pf['muestras']}) vs rival "
@@ -438,7 +468,7 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             total_fav = len(recientes) + len(medios) + len(viejos)
             total_rival = sum(1 for k in ("reciente", "medio", "viejo")
                               for x in h2h.get(k, []) if x["ganador"] == _otro(fav))
-            if total_fav >= 2 and total_fav > total_rival:
+            if len(recientes) >= 2 and total_fav / max(1, total_fav + total_rival) >= 0.75:
                 pts = 2 if recientes else (1 if medios else 0.5)
                 detalle = f"H2H: {fav} ganó {total_fav} cruces ("
                 partes = []
@@ -448,21 +478,22 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                 detalle += ", ".join(partes) + ")"
                 if total_rival:
                     detalle += f" vs {total_rival} del rival"
-                sumar(fav, pts, detalle, "h2h")
+                sumar(fav, pts, detalle, "historial")
 
     if datos_extra and datos_extra.get("descanso"):
         d = datos_extra["descanso"]
-        sumar(d["favorito"], 1, d["detalle"])
+        sumar(d["favorito"], 1, d["detalle"], "calendario")
 
     if datos_extra and datos_extra.get("congestion"):
         c = datos_extra["congestion"]
         d = datos_extra.get("descanso")
         if not (d and d.get("favorito") == c["favorito"]):
-            sumar(c["favorito"], 1, c["detalle"])
+            sumar(c["favorito"], 1, c["detalle"], "calendario")
 
     if datos_extra and datos_extra.get("elo"):
         e = datos_extra["elo"]
-        sumar(e["favorito"], e["puntos"], e["detalle"], "fuerza")
+        fuerza[e["favorito"]] = True
+        sumar(e["favorito"], e["puntos"], e["detalle"], "historial")
 
     if datos_extra and datos_extra.get("plantel"):
         pl_ = datos_extra["plantel"]
@@ -488,7 +519,9 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
 
     if puntaje == 0:
         resultado["motivo_descarte"] = "sin señales"
-    elif puntaje_contra > 1:
+    elif not fuerza[favorito]:
+        resultado["motivo_descarte"] = "sin evidencia de diferencia de nivel"
+    elif puntos_grupo[contrario].get("historial", 0) >= 2 or puntos_grupo[contrario].get("tabla", 0) >= 2 or puntaje - puntaje_contra < 2:
         resultado["motivo_descarte"] = f"señales contradictorias ({puntaje} vs {puntaje_contra})"
     elif puntaje < PUNTAJE_MINIMO:
         resultado["motivo_descarte"] = f"puntaje insuficiente ({puntaje}/{PUNTAJE_MINIMO})"
@@ -500,6 +533,11 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
         else:
             confianza = "Media"
         n_grupos = len(grupos[favorito])
+        muestras = min(perf_local.get("muestras", 0), perf_visita.get("muestras", 0))
+        reciente = all(p.get("dias_ultimo") is not None and p["dias_ultimo"] <= 21
+                       and p.get("dias_mas_antiguo") is not None and p["dias_mas_antiguo"] <= 60
+                       for p in (perf_local, perf_visita))
+        calidad = "Suficiente" if muestras >= 4 and reciente else "Limitada"
         if n_grupos < 2:
             confianza = "Media"
         elif n_grupos < 3 and confianza == "Muy Alta":
@@ -509,6 +547,9 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             "favorito": favorito,
             "alertas": textos[favorito],
             "confianza": confianza,
-            "grupos_independientes": len(grupos[favorito]),
+            "grupos_independientes": len(grupos[favorito]),  # compatibilidad, son familias de señales
+            "calidad_datos": calidad,
+            "magnitud": "Fuerte" if puntaje >= 6 else "Moderada",
+            "familias_senales": sorted(grupos[favorito]),
         })
     return resultado

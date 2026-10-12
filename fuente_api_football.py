@@ -1,7 +1,7 @@
-﻿"""
+"""
 fuente_api_football.py
 API-Sports (https://www.api-sports.io/): fuente SECUNDARIA, con cuota (Free = 100 requests/dÃ­a
-COMPARTIDOS entre todos los deportes). ESPN es la principal; esta suma deportes y ligas que ESPN
+POR API deportiva; contadores separados). ESPN es la principal; esta suma deportes y ligas que ESPN
 no cubre (handball, vÃ³ley, rugby, mÃ¡s fÃºtbol).
 
 Por defecto consulta SOLO Soccer y pide el historial de como mÃ¡ximo 2 ligas por deporte y por dÃ­a
@@ -78,14 +78,23 @@ _FINALIZADOS = {"FT", "AET", "PEN", "AOT", "AP", "FIN", "FINISHED", "AW"}
 _PROGRAMADOS = {"NS", "TBD", "SCH", "SCHEDULED"}
 _NO_JUGADOS = {"PST", "CANC", "SUSP", "ABD", "AWD", "WO", "INT"}
 
-presupuesto = U.PresupuestoDiario(
-    "api_sports", limite=os.environ.get("API_FOOTBALL_DAILY_LIMIT", "100"),
-    reserva=os.environ.get("API_FOOTBALL_RESERVA", "8"),
-)
+_presupuestos = {}
+
+
+def _presupuesto(deporte):
+    if deporte not in _presupuestos:
+        _presupuestos[deporte] = U.PresupuestoDiario(
+            f"api_sports_v2_{deporte.replace(' ', '_')}",
+            limite=os.environ.get("API_FOOTBALL_DAILY_LIMIT", "100"),
+            reserva=os.environ.get("API_FOOTBALL_RESERVA", "12"),
+        )
+    return _presupuestos[deporte]
+
 
 _cache_eventos = U.CacheTTL(8 * 3600)
 _cache_temporada = U.CacheTTL(6 * 3600)
 _deshabilitada = {"motivo": ""}
+_deportes_sin_permiso = set()
 _avisos = set()
 _bloqueadas_hasta = {}
 _reintentar_despues = {}
@@ -117,7 +126,7 @@ def _errores_del_cuerpo(data):
 
 def _get(deporte, ruta, params):
     """Devuelve response o None; corta reintentos repetitivos por red o plan sin acceso."""
-    if not disponible():
+    if not disponible() or deporte in _deportes_sin_permiso:
         return None
     tipo_pedido = "historial" if "league" in (params or {}) else "calendario"
     clave_cooldown = (deporte, ruta, tipo_pedido)
@@ -127,6 +136,7 @@ def _get(deporte, ruta, params):
     if ahora_monotono < _reintentar_despues.get(clave_cooldown, 0):
         return None
     host = _HOSTS[deporte]
+    presupuesto = _presupuesto(deporte)
     if not presupuesto.puede_gastar(1):
         _avisar_una_vez(("presupuesto", presupuesto.fecha),
                         f"[api_sports] presupuesto diario agotado ({presupuesto.usadas}/{presupuesto.limite}); "
@@ -135,15 +145,23 @@ def _get(deporte, ruta, params):
 
     info = {}
     data = U.get_json(f"https://{host}{ruta}", f"{FUENTE}_{deporte}",
-                      headers={"x-apisports-key": API_KEY}, params=params, timeout=15, info=info)
+                      headers={"x-apisports-key": API_KEY}, params=params, timeout=15, info=info, reintentar=False)
     h = {k.lower(): v for k, v in (info.get("headers") or {}).items()}
+    try:
+        if h.get("x-ratelimit-requests-limit"):
+            presupuesto.limite = int(h["x-ratelimit-requests-limit"])
+    except (TypeError, ValueError):
+        pass
     presupuesto.registrar(1, restantes_reales=h.get("x-ratelimit-requests-remaining"))
     if h.get("x-ratelimit-requests-remaining") is not None:
-        U.log(f"[api_sports] requests restantes hoy: {h['x-ratelimit-requests-remaining']}")
+        U.log(f"[api_sports] {deporte} requests restantes hoy: {h['x-ratelimit-requests-remaining']}")
 
     if data is None:
         status = info.get("status")
-        if status in (401, 403):
+        if status == 403:
+            _deportes_sin_permiso.add(deporte)
+            U.log(f"[api_sports/{deporte}] sin permiso; otras APIs deportivas siguen activas")
+        elif status == 401:
             _deshabilitada["motivo"] = f"HTTP {status}: clave invÃ¡lida o sin permiso"
             U.log(f"[api_sports] DESACTIVADA: {_deshabilitada['motivo']}")
         else:

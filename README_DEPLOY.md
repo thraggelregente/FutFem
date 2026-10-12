@@ -30,7 +30,7 @@ Los tests son offline: no envían mensajes reales a Telegram ni consumen las cuo
 ## Variables opcionales de proveedores
 
 - `HIGHLIGHTLY_API_KEY`: clave RapidAPI de Highlightly. Se empieza con una página por fecha y cuatro horas de caché. El límite local es 100 requests/día con reserva de 25 para análisis; ajustá `HIGHLIGHTLY_CACHE_MINUTES`, `HIGHLIGHTLY_RESERVA_ANALISIS` y `HIGHLIGHTLY_MAX_PAGINAS` solo tras observar el contador real del proveedor.
-- `API_FOOTBALL_KEY`: clave API-Sports. Límite local conservador de 100/día compartido entre deportes y reserva de 12. `API_SPORTS_DEPORTES` limita las disciplinas consultadas. Usá `API_SPORTS_WOMENS_LEAGUES` para añadir IDs de ligas cuya denominación no deja claro que sean femeninas; sintaxis `Soccer:ID;Basketball:ID`.
+- `API_FOOTBALL_KEY`: clave API-Sports. Límite local conservador de 100/día por API deportiva y reserva de 12. `API_SPORTS_DEPORTES` limita las disciplinas consultadas. Usá `API_SPORTS_WOMENS_LEAGUES` para añadir IDs de ligas cuya denominación no deja claro que sean femeninas; sintaxis `Soccer:ID;Basketball:ID`.
 - `ODDSPAPI_API_KEY`: opcional. Por defecto el código usa únicamente `GET /v4/fixtures` y un chequeo de cuenta documentado como no facturable. No llama `/odds`, `/markets` ni `/bookmakers`. Los topes defensivos configurados son 6 llamadas billables/día y 180/mes; la cuota restante reportada por el proveedor se protege con `ODDSPAPI_RESERVA_CUOTA_REAL=25`. `ODDSPAPI_PROFUNDIDAD=0` deja apagados pedidos extra de forma/H2H.
 - `THESPORTSDB_KEY=123`: API V1 gratis. `THESPORTSDB_WOMENS_LEAGUES` viene con IDs de fútbol femenino identificados en el directorio de TheSportsDB: `Soccer:5106,Soccer:4521,Soccer:3541,Soccer:3717,Soccer:3712,Soccer:3330`. Significan las competiciones listadas como Liga F de España, NWSL de EE. UU., Alemania Women Bundesliga, Francia Division 1 Féminine, Italia Serie A Women y Brasil Brasileiro Women. Si algún ID deja de existir o una liga cambia de ID, eliminá o sustituí ese identificador. Los IDs de competición se tratan como femeninos porque los verificaste/configuraste explícitamente; no expandas la lista sin verificarla.
 - `OpenLigaDB`: no requiere clave. Por defecto consulta `ffb1:2026` (Frauen Fußballbundesliga, temporada 2026 según su listado oficial). Revisá `OPENLIGADB_WOMENS_LEAGUES` al cambiar la temporada.
@@ -55,3 +55,29 @@ La lista blanca de ligas es la opción preferida cuando el nombre de la competic
 - OpenLigaDB API y ligas disponibles: https://api.openligadb.de/index.html y https://beta.openligadb.de/Leagues?season=2026
 - OddsPapi API: https://oddspapi.io/
 - Render Free y filesystem efímero: https://render.com/docs/free
+
+
+## Correcciones de calidad y consumo
+
+- API-Sports conserva contadores por API deportiva. Highlightly separa los hosts deportivos y comparte un contador solo para All Sports. Los contadores nuevos usan claves `v2`; no se borra Redis. Las cabeceras del proveedor corrigen el saldo disponible después de cada respuesta.
+- En endpoints medidos no hay reintentos HTTP automáticos ocultos. Los intentos sin respuesta se reservan conservadoramente; el saldo del proveedor sigue siendo la referencia final.
+- El orden de análisis rota por último intento persistido. Participantes indefinidos y tenis sin ambos rankings no consumen el máximo de análisis. Las búsquedas por nombre mantienen su tope y enfriamiento.
+- Las identidades distinguen deporte, juveniles y reservas. Los historiales deben contener al equipo, estar terminados, no ser futuros y pasar la ventana temporal. El libro reconstruye las firmas desde los nombres almacenados; no puede recuperar nombres previamente truncados ni identidades ambiguas entre países.
+- Forma, triangulación, H2H, rachas y Elo comparten un máximo de cuatro puntos. Se exige evidencia de diferencia de nivel. Calendario y bajas no bastan por sí solos. Las familias de señales no se presentan como estadísticamente independientes. La magnitud y la calidad temporal/muestral se muestran por separado; no son probabilidades calibradas.
+- La tabla se consulta también como evidencia inicial y como posible contradicción, dentro del presupuesto propio de Highlightly. Para eventos de Highlightly se utiliza su liga/temporada y se exige que ambos equipos estén en el mismo grupo.
+
+## Tenis
+
+`ranking_wta.py` descarga el PDF oficial de individuales WTA y valida fecha, volumen, cobertura superior a mil posiciones y ausencia de nombres ambiguos. Se guarda el último snapshot validado; si falla una descarga se permite respaldo de hasta 14 días. ESPN queda como respaldo fechado del top 150. Un nombre ausente siempre es ranking desconocido. El alias Catherine/Caty McNally es explícito y verificable.
+
+Las brechas de ranking generan **candidatos**, no una afirmación de mismatch confirmado sin contexto reciente. Los cortes siguen siendo heurísticos y requieren evaluación histórica antes de afirmar precisión. El umbral general de equipos sigue siendo cuatro puntos.
+
+Las rutas de Sackmann configuradas respondieron 404 en la comprobación. No se reemplazaron por una fuente no validada: forma y superficie quedan explícitamente no disponibles. `TENIS_DATASET_URL` puede configurar una plantilla CSV compatible con `{anio}` cuando exista una fuente verificada; el dataset debe tener resultados en los últimos 45 días. Tener un ranking completo no resuelve la falta de resultados recientes ITF.
+
+## Validación
+
+Ejecutar `python -m unittest -v test_radar`. Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
+
+Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas ni el despliegue de Render.
+
+El endpoint de salud informa `starting`, `ok` o `degraded`, el último barrido, análisis y presupuestos. Devuelve HTTP 503 si el barrido deja de avanzar después de la gracia de arranque. Los reinicios reales del proveedor pueden diferir del calendario UTC de los contadores internos.

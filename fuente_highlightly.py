@@ -1,4 +1,4 @@
-﻿"""
+"""
 fuente_highlightly.py
 Highlightly (https://highlightly.net/): fuente de EVENTOS femeninos y de datos de profundidad.
 
@@ -86,10 +86,19 @@ def _liga_es_femenina(deporte, liga_id, nombre_liga, nombre_local, nombre_visita
         return True
     return U.es_femenino(nombre_liga, nombre_local, nombre_visita)
 
-presupuesto = U.PresupuestoDiario(
-    "highlightly", limite=os.environ.get("HIGHLIGHTLY_DAILY_LIMIT", "100"),
-    reserva=os.environ.get("HIGHLIGHTLY_RESERVA", "5"),
-)
+_presupuestos = {}
+
+
+def _presupuesto(deporte, base=None):
+    modo = "todos" if base == BASE_TODOS or (base is None and _base_ok.get(deporte, (None,))[0] == BASE_TODOS) or MODO == "todos" else deporte
+    if modo not in _presupuestos:
+        _presupuestos[modo] = U.PresupuestoDiario(
+            f"highlightly_v2_{modo.replace(' ', '_')}",
+            limite=os.environ.get("HIGHLIGHTLY_DAILY_LIMIT", "100"),
+            reserva=os.environ.get("HIGHLIGHTLY_RESERVA", "5"),
+        )
+    return _presupuestos[modo]
+
 
 _cache_eventos = U.CacheTTL(max(30, int(os.environ.get("HIGHLIGHTLY_CACHE_MINUTES", "240"))) * 60)
 _cache_equipo = U.CacheTTL(12 * 3600)
@@ -140,6 +149,7 @@ def _get(deporte, ruta, params=None):
         return None
     estados_vistos = []
     for base, prefijo in _bases(deporte):
+        presupuesto = _presupuesto(deporte, base)
         if not presupuesto.puede_gastar(1):
             _avisar_una_vez(("presupuesto", presupuesto.fecha),
                             f"[highlightly] presupuesto diario agotado ({presupuesto.usadas}/{presupuesto.limite}); "
@@ -147,9 +157,10 @@ def _get(deporte, ruta, params=None):
             return None
         info = {}
         data = U.get_json(f"{base}{prefijo}{ruta}", FUENTE, headers=_headers(), params=params,
-                          timeout=15, info=info)
+                          timeout=15, info=info, reintentar=False)
         status = info.get("status")
         if status is None:
+            presupuesto.registrar(1)  # intento incierto: reserva conservadora
             continue  # error de red o host inexistente: get_json ya lo logueÃ³
         h = {k.lower(): v for k, v in (info.get("headers") or {}).items()}
         try:
@@ -269,7 +280,7 @@ def _items_del_dia(deporte, fecha):
     hit, valor = _cache_eventos.get(clave)
     if hit:
         return valor
-    if presupuesto.restantes() <= RESERVA_ANALISIS:
+    if _presupuesto(deporte).restantes() <= RESERVA_ANALISIS:
         return []  # lo que queda se reserva para forma / H2H / tablas; no se cachea
     items, offset, limite, total = [], 0, 100, None
     fallo_listado = False
@@ -288,7 +299,7 @@ def _items_del_dia(deporte, fecha):
         offset += limite
         if not lista or (total is not None and offset >= total):
             break
-        if presupuesto.restantes() <= RESERVA_ANALISIS:
+        if _presupuesto(deporte).restantes() <= RESERVA_ANALISIS:
             break
     if total is not None and len(items) < total:
         U.log(f"[highlightly/{deporte}] {fecha}: leÃ­ {len(items)} de {total} partidos "
@@ -296,7 +307,7 @@ def _items_del_dia(deporte, fecha):
     # Competiciones femeninas verificadas por el operador: consulta directa y exhaustiva por liga.
     conocidos = {n["id"] for n in items}
     for liga_id in sorted(_LIGAS_FEMENINAS.get(deporte, set())):
-        if presupuesto.restantes() <= RESERVA_ANALISIS:
+        if _presupuesto(deporte).restantes() <= RESERVA_ANALISIS:
             break
         data = _get(deporte, "/matches", {"date": fecha, "leagueId": liga_id, "limit": limite})
         if data is None:
@@ -529,7 +540,7 @@ def _liga_comun(partidos_a, partidos_b):
     return max(comunes, key=lambda k: ca[k] + cb[k])
 
 
-def obtener_tabla_partido(nombre_local, nombre_visita, deporte="Soccer", ids_hl=None):
+def obtener_tabla_partido(nombre_local, nombre_visita, deporte="Soccer", ids_hl=None, liga_ref=None):
     """
     Filas de tabla de los dos equipos en la liga que comparten: {"local": fila, "visita": fila,
     "n_equipos": n} o None (sin liga comÃºn, sin tabla o equipos no encontrados).
@@ -540,11 +551,11 @@ def obtener_tabla_partido(nombre_local, nombre_visita, deporte="Soccer", ids_hl=
     hl_loc, hl_vis = _resolver_ids(nombre_local, nombre_visita, deporte, ids_hl)
     if not hl_loc or not hl_vis:
         return None
-    liga = _liga_comun(_forma_cruda(deporte, hl_loc), _forma_cruda(deporte, hl_vis))
+    liga = liga_ref or _liga_comun(_forma_cruda(deporte, hl_loc), _forma_cruda(deporte, hl_vis))
     if not liga:
         return None
     for filas in _standings(deporte, liga[0], liga[1]):
         por_id = {f["id"]: f for f in filas}
         if hl_loc in por_id and hl_vis in por_id:
-            return {"local": por_id[hl_loc], "visita": por_id[hl_vis], "n_equipos": len(filas)}
+            return {"local": por_id[hl_loc], "visita": por_id[hl_vis], "n_equipos": len(filas), "liga_ref": liga}
     return None

@@ -114,7 +114,7 @@ def _get(ruta, params=None, timeout=12):
         return None
     _esperar_cupo()
     info = {}
-    data = U.get_json(f"{BASE}/{ruta}", FUENTE, params=params, timeout=timeout, info=info)
+    data = U.get_json(f"{BASE}/{ruta}", FUENTE, params=params, timeout=timeout, info=info, reintentar=False)
     if info.get("status") == 429:
         _backoff_hasta["t"] = time.time() + 120
         _avisar_una_vez(("429", int(time.time() // 600)), "[thesportsdb] HTTP 429; pausa de 2 minutos")
