@@ -49,3 +49,35 @@ Para verificar saldos faltantes, basta con una captura del contador y del perío
 ## Pruebas
 
 `python -m unittest -v test_radar test_proveedores_tenis`: 31 pruebas offline, sin Telegram ni claves privadas. Incluyen WC profesional, debut registrado, ranking desconocido, regreso ex top, rivales comparables, orientación del marcador, paginación por año, horarios fiables, caché comprimida, fechas iCal, restricciones de TheSportsDB y ventana OddsPapi. Además se probaron rutas públicas reales de WTA, ESPN y PWHL. CI ejecuta Python 3.11.
+
+## Ampliación gratuita y vigencia — 12/10/2026
+
+El radar tiene diez deportes configurados: fútbol, básquet, tenis, hockey sobre hielo, handball, vóley, rugby, softball, lacrosse y hockey sobre césped. Los tres últimos consultan exclusivamente los scoreboards femeninos verificados de ESPN. El motor usa umbrales explícitos por deporte y los presenta como evaluación experimental: no se afirma una precisión calibrada.
+
+Los deportes nuevos tienen bloqueadas las rutas de calendario, búsqueda por nombre, tablas y H2H de los proveedores medidos. No se modificaron sus presupuestos. Su historial se filtra por temporada; no usa el libro global ni Elo hasta disponer de un esquema que conserve todas las identidades de partidos. En particular, dos partidos de softball entre los mismos equipos en una doble jornada tienen claves de evento/alerta distintas.
+
+| Fuente nueva | Estado | Uso y consumo |
+|---|---|---|
+| FIVB/VIS | Activa sin clave, desactivable con `FIVB_ACTIVO=0` | Un pedido público agrupado de partidos de los últimos 90 días y próximos dos, caché 6 h. Verifica género del torneo por fila (W/1), fechas de inicio/fin, UTC, IDs y resultado normal. Tope propio 30/día con reserva 2 y 6/min; consumo base alrededor de 4/día. |
+| CEV Live Scores | Activa sin clave, desactivable con `CEV_ACTIVO=0` | Proxy público oficial: catálogo 24 h y partidos 6 h, alrededor de 5 consultas/día. Tope propio 30/día con reserva 2 y 6/min. Gender=0 y MaleNotFemale=false deben concordar; exige SeasonID, fechas de competición, UTC y caché remota de hasta 24 h. Beach/snow y modalidades contradictorias se omiten. |
+| Big Balls Sports Data, WNBA | Conector preparado; pendiente de prueba autenticada | `BBS_API_KEY` opcional en Render. Documenta plan Free de 250/día y temporada actual; nuestro tope es 250/día, ritmo 8/min y caché 6 h. Solo `/v1/matches?sport=basketball&league=wnba`, hasta tres páginas de 200; no llama mercados ni H2H de pago. Rechaza NBA, años distintos, horas de precisión solo fecha y caché sin edad verificable. No se afirma cobertura completa sin verificar con una key real. |
+| FIBA GDAP | No integrada | No se confirmó un plan gratuito utilizable por este proyecto. La documentación exige revisión de registro, acuerdo y autorización/suscripción; no equivale a registrarse y recibir una key gratuita inmediata. La web de competiciones respondió 403. |
+
+Los historiales de FIVB, CEV y BBS quedan separados por competición/temporada, con IDs propios. No se mezclan con históricos de otras fuentes ni se cuentan como evidencia independiente por multiplicar proveedores. La caché persistente de ESPN evita repetir descargas tras un deploy; cuando un rango no funciona o está fuera de temporada, consulta como máximo siete días de partidos anunciados, no 45 días vacíos. Las tablas ESPN solo se utilizan si su temporada coincide con la del evento.
+
+El PDF WTA ya vencía a los 14 días. Una regresión simula enero de 2027 y comprueba que una lista de diciembre de 2025 se rechaza. Los torneos pueden tener un nombre nominal del año siguiente y fechas vigentes: se verifican límites de fechas y IDs, no se descartan por comparar únicamente el texto del título.
+
+Comprobaciones públicas reales: FIVB devolvió un próximo partido de TAURON Liga Kobiet y 638 resultados normales; CEV, 146 resultados dentro de las validaciones. Los scoreboards individuales de ESPN devolvieron 32 resultados de softball, cuatro de lacrosse y 31 de hockey sobre césped; la lectura de historial de este último produjo 108 partidos de 84 equipos. Estos números describen la comprobación, no prometen igual disponibilidad en cada ciclo.
+
+Validación actual: `python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis`, 50 pruebas offline. CI utiliza Python 3.11.
+
+Fuentes primarias adicionales:
+
+- FIVB consulta pública y filtros: https://www.fivb.org/VisSDK/VisWebService/GetVolleyMatchList.html y https://www.fivb.org/VisSDK/VisWebService/VolleyMatchFilter.html
+- Género FIVB: https://www.fivb.org/VisSDK/VisWebService/EventGender.html
+- CEV: https://livescores.cev.eu/ y su cliente público https://livescores.cev.eu/app.js
+- NCAA softball femenino: https://www.ncaa.org/championship/division-i/softball/
+- FIBA registro y condiciones: https://gdap-portal.fiba.basketball/sign-up y https://gdap-portal.fiba.basketball/terms-of-services
+- Big Balls Sports Data: https://bigballsdata.com/wnba-api y https://bigballsdata.com/openapi.json
+
+Para activar BBS, crear una key del plan Free para basketball en su panel, guardarla como `BBS_API_KEY` en Render y verificar después saldo, acceso WNBA y respuestas. No publicar la key en chats, commits ni capturas. No hace falta ninguna key adicional para las fuentes ya activadas en esta ampliación.

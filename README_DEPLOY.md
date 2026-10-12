@@ -16,7 +16,7 @@ Subí todos los archivos del ZIP al mismo directorio del repositorio. `render.ya
 ```bash
 python -m pip install -r requirements.txt
 python -m py_compile *.py
-python -m unittest -v test_radar test_proveedores_tenis
+python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis
 ```
 
 Los tests son offline: no envían mensajes reales a Telegram ni consumen las cuotas de las API. Que los tests pasen no prueba que una clave o el plan del proveedor estén autorizados ni garantiza que un feed contenga partidos el día de la prueba.
@@ -78,8 +78,14 @@ Los límites, restricciones de planes y comprobaciones públicas están en [PROV
 
 ## Validación
 
-Ejecutar `python -m unittest -v test_radar test_proveedores_tenis` (31 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
+Ejecutar `python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis` (50 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
 
 Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas; el despliegue anterior se verificó mediante su endpoint de salud.
 
 El endpoint de salud informa `starting`, `ok` o `degraded`, el último barrido, análisis y presupuestos. Devuelve HTTP 503 si el barrido deja de avanzar después de la gracia de arranque. Los reinicios reales del proveedor pueden diferir del calendario UTC de los contadores internos.
+
+## Ampliación de fuentes públicas
+
+Se añaden FIVB/VIS y CEV para vóley femenino, y ESPN para softball, lacrosse y hockey sobre césped femeninos. Son diez deportes habilitados con cobertura desigual. Los nuevos deportes tienen bloqueados los respaldos que consumen cuota de las APIs existentes; sus alertas se identifican como evaluación experimental.
+
+`BBS_API_KEY` es opcional: prepara una fuente adicional de WNBA mediante el plan Free de Big Balls Sports Data. Sin key no hace llamadas y no figura como fuente activa. El acceso autenticado aún debe comprobarse. FIBA GDAP no se anuncia como fuente activa ni gratuita: su registro requiere aprobación/acuerdo. Ver restricciones, fechas, consumo y enlaces primarios en [PROVEEDORES.md](PROVEEDORES.md).
