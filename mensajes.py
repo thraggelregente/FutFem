@@ -6,7 +6,8 @@ DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
            "pwhl": "PWHL", "espn": "ESPN", "highlightly": "Highlightly", "api_sports": "API-Sports",
-           "openligadb": "OpenLigaDB", "thesportsdb": "TheSportsDB", "oddspapi": "OddsPapi", "theoddsapi": "The Odds API"}
+           "openligadb": "OpenLigaDB", "thesportsdb": "TheSportsDB", "oddspapi": "OddsPapi",
+           "theoddsapi": "The Odds API", "The Odds API": "The Odds API"}
 
 
 def fuentes_legibles(fuentes):
