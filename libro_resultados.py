@@ -55,6 +55,7 @@ def _cargar():
             continue
         if ts < limite or not fl or not fv:
             continue
+        fl, fv = U.firma_equipo(nl), U.firma_equipo(nv)
         clave, _ = _clave(deporte, fl, fv, ts)
         _partidos[clave] = [ts, deporte, fl, fv, str(nl)[:40], str(nv)[:40], pl, pv]
     if _partidos:
@@ -120,6 +121,8 @@ def guardar():
             ordenadas = sorted(_partidos.items(), key=lambda kv: kv[1][0], reverse=True)[:MAX_PARTIDOS]
             _partidos.clear()
             _partidos.update(ordenadas)
+        # La poda cambia el conjunto de entrenamiento aunque no se agreguen resultados.
+        _cache_elo.clear()
         cargados = {"v": 1, "p": [fila for fila in _partidos.values()]}
         if U.guardar_json(ARCHIVO, cargados):
             _sucio["v"] = False

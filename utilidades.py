@@ -148,9 +148,9 @@ def _pedir(url, headers, params, timeout, proxies, fuente):
 ESTADOS_TRANSITORIOS = (502, 503, 504)
 
 
-def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None):
+def get_json(url, fuente, headers=None, params=None, timeout=12, proxies=None, info=None, reintentar=True):
     r = _pedir(url, headers, params, timeout, proxies, fuente)
-    if r is not None and r.status_code in ESTADOS_TRANSITORIOS:
+    if reintentar and r is not None and r.status_code in ESTADOS_TRANSITORIOS:
         _registrar(fuente, r.status_code)
         log(f"[{fuente}] HTTP {r.status_code} transitorio en {url.split('?')[0]}; un reintento")
         time.sleep(1.5)
@@ -526,7 +526,7 @@ _PALABRAS_RUIDO = {
     "fc", "cf", "sc", "ac", "afc", "club", "women", "womens", "woman", "ladies",
     "fem", "femenino", "femenina", "femenil", "femeni", "feminino", "feminina",
     "feminin", "feminine", "femminile", "damen", "frauen",
-    "del", "los", "las", "cd", "ud", "u19", "u20", "u21", "u23", "sub",
+    "del", "los", "las", "cd", "ud",
 }
 
 
@@ -535,10 +535,25 @@ def tokens_significativos(texto):
 
 
 def nombres_coinciden(a, b):
+    if categoria_equipo(a) != categoria_equipo(b):
+        return False
     ta, tb = tokens_significativos(a), tokens_significativos(b)
     if not ta or not tb:
         return False
     return ta <= tb or tb <= ta
+
+
+def categoria_equipo(nombre):
+    """Preserva juveniles y reservas al resolver nombres entre proveedores."""
+    n = normalizar(nombre)
+    edades = re.findall(r"\b(?:u|sub|under)\s*(\d{2})\b", n)
+    reserva = bool(re.search(r"\b(?:ii|b|reserves?|reservas?|juniores|juniors)\b", n))
+    return tuple(sorted(edades)), reserva
+
+
+def participante_definido(nombre):
+    n = normalizar(nombre)
+    return bool(n) and n not in {"tbd", "tba", "unknown", "a confirmar", "por definir", "local", "visitante"} and not re.search(r"\b(?:winner|loser|ganador|perdedor)\b", n)
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +580,9 @@ def es_femenino(torneo="", local="", visita=""):
 
 def firma_equipo(nombre):
     toks = sorted(tokens_significativos(nombre))
-    return "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
+    base = "-".join(toks) if toks else normalizar(nombre).replace(" ", "-")
+    edades, reserva = categoria_equipo(nombre)
+    return base + ("|cat:" + ",".join(edades) if edades else "") + ("|reserva" if reserva else "")
 
 
 def firma_partido(local, visita):
@@ -675,7 +692,8 @@ def tabla_desde_fuentes(evento, fuente_highlightly):
         loc, vis = evento["local"], evento["visita"]
         ids_hl = (loc["id"], vis["id"]) if evento.get("fuente") == "highlightly" else None
         res = fuente_highlightly.obtener_tabla_partido(
-            loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"), ids_hl=ids_hl
+            loc["nombre"], vis["nombre"], evento.get("deporte", "Soccer"), ids_hl=ids_hl,
+            liga_ref=evento.get("liga_ref") if evento.get("fuente") == "highlightly" else None
         )
     except Exception as e:
         log(f"[tabla] Highlightly falló: {type(e).__name__}")

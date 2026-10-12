@@ -1,4 +1,4 @@
-﻿"""The Odds API (https://the-odds-api.com) usada EXCLUSIVAMENTE para fixtures y resultados.
+"""The Odds API (https://the-odds-api.com) usada EXCLUSIVAMENTE para fixtures y resultados.
 
 Modo CERO CUOTAS: nunca se llama a /odds ni /historical, no se piden regiones ni mercados y no se
 almacena ningÃºn dato de cuotas ni de casas de apuestas. Endpoints usados:
@@ -124,7 +124,7 @@ def _get(ruta, params=None):
     parametros = dict(params or {})
     parametros["apiKey"] = API_KEY
     info = {}
-    data = U.get_json(f"{BASE}{ruta}", FUENTE, params=parametros, timeout=15, info=info)
+    data = U.get_json(f"{BASE}{ruta}", FUENTE, params=parametros, timeout=15, info=info, reintentar=False)
     status = info.get("status")
     cabeceras = {str(k).lower(): v for k, v in (info.get("headers") or {}).items()}
     try:
@@ -132,7 +132,7 @@ def _get(ruta, params=None):
             _real["restantes"] = int(float(cabeceras["x-requests-remaining"]))
     except (TypeError, ValueError):
         pass
-    if es_scores and status is not None:
+    if es_scores:
         try:
             costo = int(float(cabeceras.get("x-requests-last", COSTO_SCORES)))
         except (TypeError, ValueError):

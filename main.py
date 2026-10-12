@@ -37,14 +37,30 @@ ESTADO = {
     "eventos_unicos": 0,
     "fuentes": [],
     "libro_resultados": 0,
+    "errores_ultimo_barrido": 0,
+    "analizados": 0,
+    "presupuestos": {},
 }
+
+
+def estado_salud():
+    intervalo = globals().get("INTERVALO_REVISION", 900)
+    ultimo = ESTADO["ultimo_barrido_utc"]
+    if ultimo and globals().get("motor_mismatches") is not None:
+        if time.time() - datetime.fromisoformat(ultimo).timestamp() < max(1800, intervalo * 3):
+            return "ok"
+    if ultimo is None and time.time() - ESTADO["inicio"] < max(300, intervalo * 3):
+        return "starting"
+    return "degraded"
 
 
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "status": "ok",
+            "status": estado_salud(),
+            "analysis_last_sweep": ESTADO["analizados"],
+            "budgets": ESTADO["presupuestos"],
             "persistence": U.modo_persistencia(),
             "sports_scope": "women_only",
             "market_data": False,
@@ -57,20 +73,19 @@ class SimpleHandler(BaseHTTPRequestHandler):
             "results_ledger": ESTADO["libro_resultados"],
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
+        self.send_response(503 if payload["status"] == "degraded" else 200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         try:
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
     def do_HEAD(self):  # noqa: N802
-        self.send_response(200)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self.do_GET()
 
     def log_message(self, fmt, *args):
         return
@@ -128,6 +143,10 @@ fuente_openligadb = _importar("fuente_openligadb")
 fuente_theoddsapi = _importar("fuente_theoddsapi")
 libro_resultados = _importar("libro_resultados")
 tenis_contexto = _importar("tenis_contexto")
+ranking_wta = _importar("ranking_wta")
+_ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
+if not isinstance(_ultimo_intento, dict):
+    _ultimo_intento = {}
 
 registro = U.RegistroVistos(ARCHIVO_ALERTADOS, dias_retencion=3)
 _ultimo_aviso_ciego = 0.0
@@ -232,14 +251,14 @@ def enviar_telegram(mensaje_html: str) -> bool:
 
 
 def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, favorito, confianza="Media",
-                  fuentes=None):
+                  fuentes=None, tipo="MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA"):
     if motor_mismatches is None:
         return False
     nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
     esc = html.escape
     detalles_txt = "\n".join(f"• {esc(str(d))}" for d in list(alertas_base)[:10])
     mensaje = (
-        "🚨 <b>MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA</b>\n\n"
+        f"🚨 <b>{esc(tipo)}</b>\n\n"
         f"🏅 <b>Deporte:</b> {esc(str(deporte))}\n"
         f"🏆 <b>Competición:</b> {esc(str(torneo))}\n"
         f"⚔️ <b>Encuentro:</b> {esc(str(nom_loc))} vs {esc(str(nom_vis))}\n"
@@ -247,7 +266,7 @@ def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, fav
         f"🕒 <b>Horario:</b> {esc(str(hora_txt))}\n"
         f"📡 <b>Fuentes:</b> {esc(', '.join(str(f) for f in (fuentes or [])) or 'sin dato')}\n\n"
         f"📊 <b>Evidencia:</b>\n{detalles_txt or 'Sin detalle adicional.'}\n\n"
-        f"🔎 <b>Confianza del análisis:</b> {esc(str(confianza))}\n"
+        f"🔎 <b>Evaluación de evidencia:</b> {esc(str(confianza))}\n"
         "<i>Estimación basada en datos deportivos; no se usan cuotas ni mercados.</i>"
     )
     entregado = enviar_telegram(mensaje)
@@ -267,7 +286,7 @@ TOLERANCIA_FECHA_S = 6 * 3600
 def _firma_evento(ev: dict[str, Any]) -> str:
     local = (ev.get("local") or {}).get("nombre") or ""
     visita = (ev.get("visita") or {}).get("nombre") or ""
-    return U.firma_partido(local, visita) if local and visita else ""
+    return f"{ev.get('deporte', '')}|{U.firma_partido(local, visita)}" if local and visita else ""
 
 
 def _inicio_evento(ev: dict[str, Any]) -> int:
@@ -295,7 +314,13 @@ def _claves_equivalentes(ev: dict[str, Any]) -> set[str]:
         datetime.fromtimestamp(inicio + delta, timezone.utc).strftime("%Y%m%d")
         for delta in (-TOLERANCIA_FECHA_S, 0, TOLERANCIA_FECHA_S)
     }
-    return {f"{firma}|{dia}" for dia in dias}
+    claves = {f"{firma}|{dia}" for dia in dias}
+    # Compatibilidad con alertas previas de mayores; jamás heredar claves juveniles ambiguas.
+    if all(U.categoria_equipo((ev.get(lado) or {}).get("nombre", "")) == ((), False)
+           for lado in ("local", "visita")):
+        legacy = U.firma_partido(ev["local"]["nombre"], ev["visita"]["nombre"])
+        claves.update(f"{legacy}|{dia}" for dia in dias)
+    return claves
 
 
 def _ya_alertado(ev: dict[str, Any]) -> bool:
@@ -391,6 +416,7 @@ def _historial_equipo(ev, lado):
 
     def suficiente(historial):
         nonlocal mejor
+        historial = motor_mismatches.historial_valido(historial, id_evento)
         if historial and len(historial) > len(mejor):
             mejor = historial
         return len(mejor) >= U.MIN_HISTORIAL_UTIL
@@ -398,23 +424,42 @@ def _historial_equipo(ev, lado):
     probadas = set()
     for candidato in observaciones:
         fuente = str(candidato.get("fuente") or "")
-        id_candidato = (candidato.get(lado) or {}).get("id")
+        lado_candidato = next((l for l in ("local", "visita")
+                               if U.firma_equipo((candidato.get(l) or {}).get("nombre", "")) ==
+                               U.firma_equipo(principal.get("nombre", ""))), None)
+        if lado_candidato is None:
+            continue
+        id_candidato = (candidato.get(lado_candidato) or {}).get("id")
         clave_obs = (fuente, str(id_candidato or ""))
         if clave_obs in probadas:
             continue
         probadas.add(clave_obs)
         try:
             historial = U.historial_desde_fuentes(
-                candidato, lado, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football,
+                candidato, lado_candidato, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football,
                 fuente_thesportsdb=fuente_thesportsdb, modo="propia",
             )
-            if suficiente(_remapear_historial(historial, id_candidato, id_evento)):
+            # Remapea los dos participantes del evento, incluso con localía invertida.
+            mapa_ids = {}
+            for lado_actual in ("local", "visita"):
+                equipo_actual = ev.get(lado_actual) or {}
+                lado_obs = next((l for l in ("local", "visita")
+                                 if U.firma_equipo((candidato.get(l) or {}).get("nombre", "")) ==
+                                 U.firma_equipo(equipo_actual.get("nombre", ""))), None)
+                if lado_obs:
+                    id_original = candidato[lado_obs].get("id")
+                    if id_original is not None and equipo_actual.get("id") is not None:
+                        mapa_ids[str(id_original)] = str(equipo_actual["id"])
+            historial = [dict(p, id_local=mapa_ids.get(str(p.get("id_local")), p.get("id_local")),
+                              id_visita=mapa_ids.get(str(p.get("id_visita")), p.get("id_visita")))
+                         for p in historial]
+            if suficiente(historial):
                 return mejor
         except Exception as exc:
             U.log(f"[historial] fuente {fuente or '?'} falló para {ev.get('id')}: {type(exc).__name__}")
         if fuente_openligadb and candidato.get("deporte") == "Soccer":
             try:
-                equipo = candidato.get(lado) or {}
+                equipo = candidato.get(lado_candidato) or {}
                 forma = fuente_openligadb.obtener_forma_reciente(
                     equipo.get("nombre", ""), deporte="Soccer", limite=10,
                     id_interno=(principal.get("id") if id_evento is not None else equipo.get("id")),
@@ -478,6 +523,9 @@ def _procesar_evento(ev, st, ahora_ts):
         U.log(f"[filtro] rechazo por falta de evidencia femenina: {torneo} | {nom_loc} vs {nom_vis}")
         return False
     st["femeninos"] += 1
+    if not U.participante_definido(nom_loc) or not U.participante_definido(nom_vis) or U.firma_equipo(nom_loc) == U.firma_equipo(nom_vis):
+        st["sin_datos"] += 1
+        return False
 
     if not _fecha_evento_valida(ev, ahora_ts, st):
         return False
@@ -489,12 +537,7 @@ def _procesar_evento(ev, st, ahora_ts):
     if deporte == "Tennis":
         local = ev.get("local") or {}
         visita = ev.get("visita") or {}
-        sin_ranking = (
-            local.get("ranking") is None
-            and visita.get("ranking") is None
-            and not local.get("fuera_ranking")
-            and not visita.get("fuera_ranking")
-        )
+        sin_ranking = local.get("ranking") is None or visita.get("ranking") is None
         if sin_ranking:
             st["sin_datos"] += 1
             return False
@@ -508,9 +551,12 @@ def _procesar_evento(ev, st, ahora_ts):
             fuera_visita=bool(visita.get("fuera_ranking", False)),
             corte_ranking=local.get("ranking_corte") or visita.get("ranking_corte"),
         )
-        U.log(f"[tenis] {nom_loc} (#{local.get('ranking') or 'fuera'}) vs {nom_vis} (#{visita.get('ranking') or 'fuera'}) "
-              f"[corte top {local.get('ranking_corte') or visita.get('ranking_corte') or '?'}] -> {pts} pts")
+        U.log(f"[tenis] {nom_loc} (#{local.get('ranking') or 'desconocido'}) vs {nom_vis} "
+              f"(#{visita.get('ranking') or 'desconocido'}) -> {pts} pts; fecha={local.get('ranking_fecha')}")
         detalles_tenis = [detalle]
+        for jugador in (local, visita):
+            detalles_tenis.append(f"Ranking: {jugador.get('ranking_fuente') or 'sin verificar'}; fecha {jugador.get('ranking_fecha') or 'desconocida'}")
+        ctx = None
         if hay and tenis_contexto:
             nom_fav, nom_riv = (nom_loc, nom_vis) if favorito == motor_mismatches.LOCAL else (nom_vis, nom_loc)
             try:
@@ -521,6 +567,9 @@ def _procesar_evento(ev, st, ahora_ts):
             ajuste, extra = motor_mismatches.ajustar_tenis_por_contexto(favorito, ctx)
             pts += ajuste
             detalles_tenis.extend(extra)
+        contexto_util = bool(ctx and ctx.get("disponible"))
+        if not contexto_util:
+            detalles_tenis.append("Forma y superficie recientes no disponibles: candidato basado solo en ranking.")
         if hay and pts >= 2:
             entregado = enviar_alerta(
                 deporte,
@@ -530,8 +579,9 @@ def _procesar_evento(ev, st, ahora_ts):
                 str(ev.get("horario") or "A confirmar"),
                 detalles_tenis,
                 favorito,
-                "Alta" if pts >= 3 else "Media",
-                fuentes=ev.get("_fuentes_detectadas"),
+                "Magnitud: fuerte" if pts >= 3 else "Magnitud: moderada",
+                fuentes=list(ev.get("_fuentes_detectadas") or []) + list({j.get("ranking_fuente") for j in (local, visita) if j.get("ranking_fuente")}),
+                tipo="CANDIDATO TENIS FEMENINO — BRECHA DE RANKING" if not contexto_util else "ASIMETRÍA TENIS FEMENINO",
             )
             st["alertas"] += 1
             if entregado:
@@ -542,11 +592,12 @@ def _procesar_evento(ev, st, ahora_ts):
     id_vis = (ev.get("visita") or {}).get("id")
     forma_loc = _historial_equipo(ev, "local")
     forma_vis = _historial_equipo(ev, "visita")
+    forma_loc = motor_mismatches.historial_valido(forma_loc, id_loc)
+    forma_vis = motor_mismatches.historial_valido(forma_vis, id_vis)
     if not forma_loc or not forma_vis:
         st["sin_datos"] += 1
         _registrar_sin_datos(clave, ev)
-        U.log(f"[sin-datos] {torneo}: {nom_loc} vs {nom_vis}; se reintenta tras un enfriamiento (no bloquea el ciclo)")
-        return False
+        U.log(f"[datos-parciales] {torneo}: {nom_loc} vs {nom_vis}; forma {len(forma_loc)}/{len(forma_vis)}; se evalúan otras señales disponibles")
 
     st["analizados"] += 1
     perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc, deporte)
@@ -581,19 +632,10 @@ def _procesar_evento(ev, st, ahora_ts):
             datos_extra=datos_extra,
         )
 
-    resultado = evaluar(None)
-    if (
-        not resultado["hay_mismatch"]
-        and resultado["puntaje"] >= 2
-        and resultado["puntaje_contrario"] <= 1
-    ):
-        tabla, cantidad_equipos = U.tabla_desde_fuentes(ev, fuente_highlightly)
-        if tabla:
-            resultado = evaluar(
-                motor_mismatches.evaluar_tabla_posiciones(
-                    tabla, id_loc, id_vis, n_equipos=cantidad_equipos
-                )
-            )
+    tabla, cantidad_equipos = U.tabla_desde_fuentes(ev, fuente_highlightly)
+    resultado = evaluar(
+        motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis, cantidad_equipos) if tabla else None
+    )
 
     if resultado["hay_mismatch"]:
         favorito = resultado["favorito"]
@@ -605,8 +647,8 @@ def _procesar_evento(ev, st, ahora_ts):
             str(ev.get("horario") or "A confirmar"),
             resultado.get("alertas") or [],
             favorito,
-            f"{resultado.get('confianza', 'Media')} "
-            f"({resultado.get('grupos_independientes', 1)} grupo(s) de señales independientes)",
+            f"Magnitud: {resultado.get('magnitud', 'Moderada')}; calidad: {resultado.get('calidad_datos', 'Limitada')}; "
+            f"{resultado.get('grupos_independientes', 1)} familia(s) de señales, sin independencia garantizada",
             fuentes=ev.get("_fuentes_detectadas"),
         )
         st["alertas"] += 1
@@ -740,7 +782,15 @@ def _recolectar_eventos(resumen):
                     actual["_observaciones"] = observaciones
 
     _log_aporte_por_fuente(candidatos)
-    return list(candidatos.values())
+    salida = list(candidatos.values())
+    if ranking_wta and any(ev.get("deporte") == "Tennis" for ev in salida):
+        ranking_wta.enriquecer(salida, fuente_espn)
+    elif ranking_wta is None:
+        for ev in salida:
+            if ev.get("deporte") == "Tennis":
+                for lado in ("local", "visita"):
+                    (ev.get(lado) or {})["ranking"] = None
+    return salida
 
 
 def _log_aporte_por_fuente(candidatos):
@@ -779,7 +829,13 @@ def _imprimir_resumen(resumen):
 def _avisar_si_esta_ciego(resumen):
     global _ultimo_aviso_ciego
     hubo_200 = any(codigos.get(200, 0) for codigos in U.ESTADISTICAS.values())
-    if hubo_200:
+    analizados = sum(st["analizados"] for st in resumen.values())
+    capturados = sum(st["eventos"] for st in resumen.values())
+    if hubo_200 or not any(sum(c.values()) for c in U.ESTADISTICAS.values()):
+        if capturados and not analizados and time.time() - _ultimo_aviso_ciego >= 6 * 3600:
+            _ultimo_aviso_ciego = time.time()
+            enviar_telegram("⚠️ <b>Radar con calendario, pero sin análisis útiles en este barrido.</b>\n"
+                            "Revisá disponibilidad de rankings, historial y presupuestos por deporte.")
         return
     hay_pedidos = any(sum(codigos.values()) for codigos in U.ESTADISTICAS.values())
     if not hay_pedidos or time.time() - _ultimo_aviso_ciego < 6 * 3600:
@@ -805,7 +861,8 @@ def ejecutar_barrido_radar():
     ahora_ts = time.time()
     t_inicio = time.monotonic()
     eventos = _recolectar_eventos(resumen)
-    eventos.sort(key=lambda ev: (0 if _tiene_historial_propio(ev) else 1, ev.get("startTimestamp", 0)))
+    # Los pendientes nunca procesados van primero; luego rota por último intento.
+    eventos.sort(key=lambda ev: (_ultimo_intento.get(_clave_canonica_evento(ev), 0), ev.get("startTimestamp", 0)))
 
     intentos = 0
     busquedas_por_nombre = 0
@@ -819,12 +876,25 @@ def ejecutar_barrido_radar():
         if _en_enfriamiento(clave_ev, ahora_ts):
             st["enfriados"] += 1
             continue
+        # Filtros baratos antes de gastar cupo. Tenis sin ranking no ocupa intentos.
+        if not _fecha_evento_valida(ev, ahora_ts, st):
+            continue
+        if _ya_alertado(ev):
+            st["ya_vistos"] += 1
+            continue
+        if not all(U.participante_definido((ev.get(lado) or {}).get("nombre")) for lado in ("local", "visita")):
+            st["sin_datos"] += 1
+            continue
+        if ev.get("deporte") == "Tennis" and not all((ev.get(lado) or {}).get("ranking") for lado in ("local", "visita")):
+            st["sin_datos"] += 1
+            continue
         if not _tiene_historial_propio(ev):
             if busquedas_por_nombre >= MAX_BUSQUEDAS_POR_NOMBRE:
                 omitidos_busqueda += 1
                 continue
             busquedas_por_nombre += 1
         intentos += 1
+        _ultimo_intento[clave_ev] = ahora_ts
         descartes_antes = st["lejanos"] + st["no_vigentes"] + st["ya_vistos"]
         try:
             _procesar_evento(ev, st, ahora_ts)
@@ -845,12 +915,36 @@ def ejecutar_barrido_radar():
     if omitidos_busqueda:
         U.log(f"[radar] {omitidos_busqueda} eventos solo-calendario esperan al próximo ciclo "
               f"(tope de {MAX_BUSQUEDAS_POR_NOMBRE} búsquedas por nombre por ciclo)")
+    claves_actuales = {_clave_canonica_evento(ev) for ev in eventos}
+    for k in list(_ultimo_intento):
+        if k not in claves_actuales:
+            _ultimo_intento.pop(k, None)
+    U.guardar_json("ultimo_intento_v2.json", _ultimo_intento)
+    ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
+    ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())
+    ESTADO["presupuestos"] = _resumen_presupuestos()
     ESTADO["barridos"] += 1
     ESTADO["ultimo_barrido_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ESTADO["ultimo_barrido_segundos"] = round(time.monotonic() - t_inicio, 1)
     ESTADO["eventos_unicos"] = len(eventos)
     _imprimir_resumen(resumen)
     _avisar_si_esta_ciego(resumen)
+
+
+def _resumen_presupuestos():
+    salida = {}
+    for modulo in (fuente_api_football, fuente_highlightly):
+        for nombre, presupuesto in getattr(modulo, "_presupuestos", {}).items():
+            restante = presupuesto.restantes()
+            fila = {"fecha_utc": presupuesto.fecha, "usadas": presupuesto.usadas,
+                    "limite": presupuesto.limite, "disponibles_bot": restante}
+            salida[f"{modulo.FUENTE}:{nombre}"] = fila
+            U.log(f"[presupuesto/{modulo.FUENTE}/{nombre}] {fila}")
+    for modulo in (fuente_oddspapi, fuente_theoddsapi):
+        if modulo and modulo.disponible():
+            salida[modulo.FUENTE] = modulo.presupuesto.resumen()
+            U.log(f"[presupuesto/{modulo.FUENTE}] {salida[modulo.FUENTE]}")
+    return salida
 
 
 def _fuentes_activas():

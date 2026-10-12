@@ -158,6 +158,17 @@ def obtener_eventos(deporte_interno):
         if matches is None:
             _avisar_una_vez(("fallo", shortcut, season), f"[openligadb] sin datos para {shortcut}/{season}; se reintentarÃ¡")
             continue
+        terminados = []
+        for match in matches:
+            if not match.get("MatchIsFinished"):
+                continue
+            local, visita = _equipo(match, "Team1"), _equipo(match, "Team2")
+            pl, pv = _resultado_final(match)
+            if local and visita and pl is not None and pv is not None:
+                terminados.append({"fecha": match.get("MatchDateTimeUTC"),
+                                   "nom_local": local["nombre"], "nom_visita": visita["nombre"],
+                                   "puntos_local": pl, "puntos_visita": pv})
+        L.ingestar("Soccer", terminados, FUENTE)
         for match in matches:
             ev = _normalizar(match, shortcut, season, now_ts)
             if ev:

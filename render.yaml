@@ -1,4 +1,4 @@
-﻿services:
+services:
   - type: web
     name: radar-femenino-bot
     env: python
@@ -24,7 +24,7 @@
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
 
-      # API-Sports: clave opcional; lÃ­mite diario compartido por deportes.
+      # API-Sports: clave opcional; límite diario por API deportiva.
       - key: API_FOOTBALL_KEY
         sync: false
       - key: API_SPORTS_DEPORTES
@@ -131,7 +131,7 @@
       # Bajas confirmadas (ESPN /injuries) solo para ligas donde el endpoint exista; formato deporte:slug.
       - key: ESPN_LESIONES_SLUGS
         value: basketball:wnba
-      # Tenis: superficie y forma con el dataset abierto de Jeff Sackmann (CC BY-NC-SA, uso no comercial).
+      # Tenis: ranking PDF oficial WTA. Contexto solo si el dataset configurado está disponible y reciente.
       - key: TENIS_CONTEXTO_ACTIVO
         value: "1"
       - key: TENIS_ANIOS

@@ -1,4 +1,4 @@
-﻿"""
+"""
 fuente_espn.py
 ESPN (API pÃºblica, sin clave): fuente de RESPALDO y ranking WTA; nunca es el proveedor principal
 (en main.py tiene la menor prioridad salvo en tenis, donde es la Ãºnica con ranking).
@@ -163,28 +163,41 @@ def ranking_corte():
     return max(mapa.values()) if mapa else None
 
 
+_ranking_fecha = None
+_ranking_nombres_completos = {}
+
+
 def ranking_wta():
+    global _ranking_fecha
     hit, valor = _cache_ranking.get("wta")
     if hit:
         return valor
     data = U.get_json(f"{BASE}/tennis/wta/rankings", FUENTE, timeout=12)
     mapa = {}
     nombres = {}
+    completos = {}
+    _ranking_fecha = None
     try:
-        for r in (data or {}).get("rankings", [])[0].get("ranks", []) or []:
+        lista = next((x for x in (data or {}).get("rankings", []) if x.get("type") == "wta"), {})
+        _ranking_fecha = lista.get("update")
+        for r in lista.get("ranks", []) or []:
             ath = r.get("athlete") or {}
             pos = _entero(r.get("current"))
             if ath.get("id") is not None and pos:
                 mapa[str(ath["id"])] = pos
                 nombre = ath.get("displayName") or ath.get("fullName")
+                if nombre:
+                    completos[nombre] = pos
                 if nombre and len(U.tokens_significativos(nombre)) >= 2:
                     nombres[U.firma_equipo(nombre)] = pos
     except Exception:
         mapa, nombres = {}, {}
+    _ranking_nombres_completos.clear()
+    _ranking_nombres_completos.update(completos)
     _ranking_nombres.clear()
     _ranking_nombres.update(nombres)
     if mapa:
-        U.log(f"[espn] ranking WTA: {len(mapa)} jugadoras (top {max(mapa.values())}); quien no figura es rank > {max(mapa.values())}")
+        U.log(f"[espn] ranking WTA: {len(mapa)} jugadoras (top {max(mapa.values())}); ausencia significa ranking desconocido")
     # Un ranking vacÃ­o (fallo de ESPN) no se cachea 12 h: dejarÃ­a al tenis ciego medio dÃ­a.
     _cache_ranking.set("wta", mapa, ttl=None if mapa else TTL_FALLO * 2)
     return mapa
@@ -209,7 +222,7 @@ def _jugadora(c, ranking):
         U.log(f"[espn/tenis] {nombre}: ranking WTA #{rk} pero curatedRank={curado} (se usa #{rk}; curatedRank es la semilla del torneo)")
     corte = max(ranking.values()) if ranking else None
     return {"id": pid, "nombre": nombre, "ranking": rk, "semilla": curado,
-            "fuera_ranking": bool(ranking) and rk is None, "ranking_corte": corte}
+            "fuera_ranking": False, "ranking_corte": None, "ranking_fecha": _ranking_fecha}
 
 
 def _eventos_tenis(slug, nombre_liga, ahora):
@@ -425,6 +438,5 @@ def lesiones_equipo(deporte_interno, nombre_equipo, inferir_cero=False):
             continue
         if firma in tabla:
             return tabla[firma]
-        if inferir_cero and len(tabla) >= 5:
-            return {"fuera": 0, "dudosas": 0, "inferido": True}
+        # Ausencia en el feed no demuestra cero lesiones.
     return None
