@@ -74,8 +74,9 @@ def evaluar(ev, perfiles=None):
                     and len((pf or {}).get("recientes", [])) >= 4
                     and isinstance(favorita.get("ranking"), int) and favorita["ranking"] <= 1200):
                 hay, fav, puntos, experiencia_senal = True, lado, 4, True
-                evidencia = [f"Experiencia registrada: favorita {exp} partidos frente a rival con {_experiencia(pr)}; "
-                             "wild card confirmada y cobertura de dos años verificada. No demuestra condición amateur."]
+                evidencia = [f"Experiencia WTA registrada: favorita {exp} partidos frente a rival con {_experiencia(pr)}; "
+                             "wild card confirmada y paginación del feed de dos años verificada. "
+                             "Cobertura ITF limitada; no demuestra condición amateur."]
                 break
     if not hay:
         return {"alertar": False, "motivo": "sin brecha verificada", "puntaje": 0}
