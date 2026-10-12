@@ -3,8 +3,10 @@ import html
 
 DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Tennis": ("🎾", "Tenis"), "Ice Hockey": ("🏒", "Hockey sobre hielo"),
-            "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby")}
+            "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby"),
+            "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
+           "fivb": "FIVB/VIS", "cev": "CEV", "bbs": "Big Balls Sports Data", "Big Balls Sports Data": "Big Balls Sports Data",
            "pwhl": "PWHL", "espn": "ESPN", "highlightly": "Highlightly", "api_sports": "API-Sports",
            "openligadb": "OpenLigaDB", "thesportsdb": "TheSportsDB", "oddspapi": "OddsPapi",
            "theoddsapi": "The Odds API", "The Odds API": "The Odds API"}
@@ -27,6 +29,8 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
     emoji, nombre = DEPORTES.get(deporte, ("🏅", deporte))
     candidato = "CANDIDATO" in tipo.upper()
     titulo = "Candidato por ranking" if candidato and "RANKING" in tipo.upper() else "Candidato deportivo" if candidato else "Asimetría deportiva"
+    if "EXPERIMENTAL" in tipo.upper():
+        titulo = "Asimetría · evaluación experimental"
     etiqueta = "Mejor ranking" if candidato and "RANKING" in tipo.upper() else "Lado a evaluar" if candidato else "Ventaja observada"
     detalles = list(dict.fromkeys(str(d) for d in evidencias or []))[:10]
     return (

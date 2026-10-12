@@ -40,17 +40,21 @@ LIGAS = {
     "Tennis": {
         "wta": "WTA",
     },
+    "Softball": {"college-softball": "NCAA Softball femenino"},
+    "Lacrosse": {"womens-college-lacrosse": "NCAA Women's Lacrosse"},
+    "Field Hockey": {"womens-college-field-hockey": "NCAA Women's Field Hockey"},
 }
 
-_DEPORTE_ESPN = {"Soccer": "soccer", "Basketball": "basketball", "Ice Hockey": "hockey", "Tennis": "tennis"}
+_DEPORTE_ESPN = {"Soccer": "soccer", "Basketball": "basketball", "Ice Hockey": "hockey", "Tennis": "tennis",
+                 "Softball": "baseball", "Lacrosse": "lacrosse", "Field Hockey": "field-hockey"}
 _SPORT_A_INTERNO = {v: k for k, v in _DEPORTE_ESPN.items()}
 
 _RE_SLUG_FEM = re.compile(r"(\.w\.|nwsl|wchampions|\.wwc|shebelieves|womens|wnba|wta)", re.I)
 _ESTADOS_NO_JUGADOS = ("POSTPONED", "CANCELED", "CANCELLED", "SUSPENDED", "ABANDONED", "DELAYED", "FORFEIT")
 
-_cache_proximos = U.CacheTTL(max(10, int(os.environ.get("ESPN_SCOREBOARD_CACHE_MINUTES", "180"))) * 60)
-_cache_dia_pasado = U.CacheTTL(24 * 3600)
-_cache_historial = U.CacheTTL(6 * 3600)
+_cache_proximos = U.CachePersistente("espn_proximos", max(10, int(os.environ.get("ESPN_SCOREBOARD_CACHE_MINUTES", "180"))) * 60)
+_cache_dia_pasado = U.CachePersistente("espn_pasados", 24 * 3600)
+_cache_historial = U.CachePersistente("espn_historial", 6 * 3600)
 _cache_ranking = U.CacheTTL(12 * 3600)
 _cache_lesiones = U.CacheTTL(3 * 3600)
 _lesiones_sin_soporte = {}  # (sport, slug) -> timestamp hasta el cual no se reintenta
@@ -130,6 +134,8 @@ def _normalizar_equipos(evento, deporte, slug, nombre_liga, ahora):
     estado = ((comp.get("status") or evento.get("status") or {}).get("type") or {})
     if estado.get("state") != "pre":
         return None
+    if comp.get("timeValid") is False or any(k in str(estado.get("name", "")).upper() for k in _ESTADOS_NO_JUGADOS):
+        return None
     start = _iso_a_ts(evento.get("date"))
     if not start or start < ahora or start > ahora + HORAS_VENTANA * 3600:
         return None
@@ -150,6 +156,7 @@ def _normalizar_equipos(evento, deporte, slug, nombre_liga, ahora):
         "fuente": FUENTE,
         "femenino_seguro": True,
         "liga_ref": (_DEPORTE_ESPN[deporte], slug),
+        "season_ref": (evento.get("season") or {}).get("year"),
     }
 
 
@@ -279,7 +286,8 @@ def obtener_eventos(deporte_interno):
                 por_id[ev["id"]] = ev
             continue
         for fecha in (_fecha_utc(0), _fecha_utc(1)):
-            data = _scoreboard(sport, slug, fecha, _cache_proximos)
+            data = _scoreboard(sport, slug, fecha, _cache_proximos,
+                               limit=100 if deporte_interno in {"Softball", "Lacrosse", "Field Hockey"} else None)
             for e in (data or {}).get("events", []) or []:
                 try:
                     ev = _normalizar_equipos(e, deporte_interno, slug, nombre_liga, ahora)
@@ -322,6 +330,18 @@ def _partido_terminado(evento):
 
 def _eventos_pasados(sport, slug):
     desde, hasta = _fecha_utc(-DIAS_HISTORIAL), _fecha_utc(0)
+    if sport in {"baseball", "lacrosse", "field-hockey"}:
+        # Estos scoreboards no aceptan todos los rangos/límites usados por fútbol.
+        # El calendario del feed indica los días reales: máximo siete por barrido.
+        data = _scoreboard(sport, slug, hasta, _cache_proximos, limit=100)
+        if not data:
+            return []
+        fechas = {str(f)[:10].replace("-", "") for l in data.get("leagues", []) for f in l.get("calendar", [])}
+        salida = []
+        for fecha in sorted((f for f in fechas if desde <= f <= hasta), reverse=True)[:7]:
+            dia = data if fecha == hasta else _scoreboard(sport, slug, fecha, _cache_dia_pasado, limit=100)
+            salida.extend((dia or {}).get("events", []))
+        return salida
     rango = f"{desde}-{hasta}"
     for limite in (1000, None):
         data = _scoreboard(sport, slug, rango, _cache_dia_pasado, limit=limite)
@@ -330,23 +350,29 @@ def _eventos_pasados(sport, slug):
         eventos = data.get("events") or []
         if eventos:
             return eventos
-    U.log(f"[espn] {slug}: el rango de fechas no devolviÃ³ datos; pido dÃ­a por dÃ­a ({DIAS_HISTORIAL} pedidos)")
+    # Fuera de temporada, un feed vacío no justifica 45 consultas. Usar solo
+    # días de competición anunciados en el calendario, con máximo siete.
+    calendario = {str(f)[:10].replace("-", "") for l in data.get("leagues", []) for f in l.get("calendar", [])}
+    fechas = [f for f in calendario if desde <= f <= hasta]
+    U.log(f"[espn] {slug}: rango vacío; respaldo en {min(7, len(fechas))} días anunciados")
     todos = []
-    for d in range(1, DIAS_HISTORIAL + 1):
-        data = _scoreboard(sport, slug, _fecha_utc(-d), _cache_dia_pasado)
+    for fecha in sorted(fechas, reverse=True)[:7]:
+        data = _scoreboard(sport, slug, fecha, _cache_dia_pasado)
         todos.extend((data or {}).get("events") or [])
         time.sleep(0.15)
     return todos
 
 
-def _historial_liga(sport, slug):
-    clave = (sport, slug)
+def _historial_liga(sport, slug, season=None):
+    clave = (sport, slug, season)
     hit, valor = _cache_historial.get(clave)
     if hit:
         return valor
 
     por_equipo, vistos, unicos = {}, set(), []
     for e in _eventos_pasados(sport, slug):
+        if season is not None and str((e.get("season") or {}).get("year")) != str(season):
+            continue
         try:
             p = _partido_terminado(e)
         except Exception:
@@ -360,7 +386,7 @@ def _historial_liga(sport, slug):
     for lista in por_equipo.values():
         lista.sort(key=lambda p: p["fecha"], reverse=True)
 
-    if unicos and sport in _SPORT_A_INTERNO:
+    if unicos and sport in _SPORT_A_INTERNO and _SPORT_A_INTERNO[sport] not in {"Softball", "Lacrosse", "Field Hockey"}:
         L.ingestar(_SPORT_A_INTERNO[sport], unicos, "espn")  # alimenta el libro (Elo e historial por nombre)
     U.log(f"[espn] historial {slug}: {len(vistos)} partidos, {len(por_equipo)} equipos")
     _cache_historial.set(clave, por_equipo, ttl=None if por_equipo else TTL_FALLO * 2)
@@ -372,7 +398,7 @@ def historial_equipo(evento, lado):
     if not sport or sport == "tennis":
         return []
     tid = (evento.get(lado) or {}).get("id")
-    return _historial_liga(sport, slug).get(tid, [])
+    return _historial_liga(sport, slug, evento.get("season_ref")).get(tid, [])
 
 
 _cache_tablas = U.CachePersistente("espn_tablas", 6 * 3600)
@@ -386,6 +412,12 @@ def tabla_partido(evento):
     if not hit:
         data = U.get_json(f"https://site.api.espn.com/apis/v2/sports/{sport}/{slug}/standings", FUENTE, timeout=12)
         _cache_tablas.set((sport, slug), data, ttl=None if data else 3600)
+    # Un JSON descargado hoy puede seguir conteniendo una tabla de otra temporada.
+    season = evento.get("season_ref")
+    temporada_tabla = (data or {}).get("season") or {}
+    if (season is None or not isinstance(temporada_tabla, dict)
+            or str(temporada_tabla.get("year")) != str(season)):
+        return None, 0
     def grupos(nodo):
         if not isinstance(nodo, dict):
             return

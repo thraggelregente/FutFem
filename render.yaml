@@ -201,3 +201,7 @@ services:
         value: "4"
       - key: PWHL_ACTIVO
         value: "1"
+      - key: FIVB_ACTIVO
+        value: "1"
+      - key: CEV_ACTIVO
+        value: "1"

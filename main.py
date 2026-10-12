@@ -59,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "telegram-presentation-v1",
+            "revision": "free-source-expansion-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -123,7 +123,9 @@ ARCHIVO_ENFRIAMIENTO = "enfriamiento_sin_datos.json"
 ENFRIAMIENTO_SIN_DATOS_MIN = max(0, int(os.environ.get("ENFRIAMIENTO_SIN_DATOS_MIN", "60")))
 ENFRIAMIENTO_MAX_MIN = max(ENFRIAMIENTO_SIN_DATOS_MIN, int(os.environ.get("ENFRIAMIENTO_MAX_MIN", "360")))
 MAX_BUSQUEDAS_POR_NOMBRE = max(0, int(os.environ.get("MAX_BUSQUEDAS_POR_NOMBRE", "15")))
-DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby"]
+DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby",
+                  "Softball", "Lacrosse", "Field Hockey"]
+DEPORTES_SIN_CUPO_COMERCIAL = {"Softball", "Lacrosse", "Field Hockey"}
 
 
 def _importar(nombre: str, critico: bool = False):
@@ -147,6 +149,9 @@ libro_resultados = _importar("libro_resultados")
 ranking_wta = _importar("ranking_wta")
 fuente_wta = _importar("fuente_wta")
 fuente_pwhl = _importar("fuente_pwhl")
+fuente_fivb = _importar("fuente_fivb")
+fuente_cev = _importar("fuente_cev")
+fuente_bbs = _importar("fuente_bbs")
 motor_tenis = _importar("motor_tenis")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
@@ -180,7 +185,7 @@ def _guardar_enfriamiento(enf: dict[str, tuple[float, int]]) -> None:
 
 
 _enfriamiento: dict[str, tuple[float, int]] = _cargar_enfriamiento()
-_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl"}
+_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl", "fivb", "cev", "bbs"}
 
 
 # ---------------------------------------------------------------------------
@@ -294,10 +299,14 @@ def _clave_canonica_evento(ev: dict[str, Any]) -> str:
     if not firma or not inicio:
         return str(ev.get("clave") or ev.get("id") or "").strip()
     dia_utc = datetime.fromtimestamp(inicio, timezone.utc).strftime("%Y%m%d")
+    if ev.get("deporte") == "Softball":
+        return f"{firma}|{dia_utc}|{ev.get('id') or inicio}"  # permite doble jornada
     return f"{firma}|{dia_utc}"
 
 
 def _claves_equivalentes(ev: dict[str, Any]) -> set[str]:
+    if ev.get("deporte") == "Softball":
+        return {_clave_canonica_evento(ev)}
     firma = _firma_evento(ev)
     inicio = _inicio_evento(ev)
     if not firma or not inicio:
@@ -398,6 +407,9 @@ _COSTO_HISTORIAL = {
 
 
 def _historial_equipo(ev, lado):
+    if ev.get("historial_aislado"):
+        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs}.get(ev.get("fuente"))
+        return modulo.historial_equipo(ev, lado) if modulo else []
     principal = ev.get(lado) or {}
     id_evento = principal.get("id")
     observaciones = sorted(
@@ -428,9 +440,14 @@ def _historial_equipo(ev, lado):
         probadas.add(clave_obs)
         try:
             historial = U.historial_desde_fuentes(
-                candidato, lado_candidato, fuente_espn, fuente_highlightly, fuente_oddspapi, fuente_api_football,
+                candidato, lado_candidato, fuente_espn,
+                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_highlightly,
+                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_oddspapi,
+                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_api_football,
                 fuente_thesportsdb=fuente_thesportsdb, modo="propia",
             )
+            if fuente == "bbs" and fuente_bbs:
+                historial = fuente_bbs.historial_equipo(candidato, lado_candidato)
             # Remapea los dos participantes del evento, incluso con localía invertida.
             mapa_ids = {}
             for lado_actual in ("local", "visita"):
@@ -461,6 +478,8 @@ def _historial_equipo(ev, lado):
             except Exception as exc:
                 U.log(f"[historial/openligadb] {type(exc).__name__} para {ev.get('id')}")
 
+    if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL:
+        return mejor  # solo historial de su liga/temporada; ningún respaldo medido por nombre
     if libro_resultados:
         try:
             if suficiente(libro_resultados.historial_equipo(ev, lado, limite=10)):
@@ -522,6 +541,8 @@ def _tabla_evento(ev):
                 tabla[ev[lado_ev]["id"]] = raw[id_obs]
         if len(tabla) == 2:
             return tabla, cantidad
+    if ev.get("historial_aislado") or ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL:
+        return None, 0
     hl = next((o for o in observaciones if o.get("fuente") == "highlightly"), ev)
     raw, cantidad = U.tabla_desde_fuentes(hl, fuente_highlightly)
     if not raw:
@@ -616,7 +637,10 @@ def _procesar_evento(ev, st, ahora_ts):
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
     
     h2h_raw = U.h2h_desde_fuentes(
-        ev, forma_loc, forma_vis, fuente_highlightly, fuente_oddspapi, id_vis, libro_resultados=libro_resultados
+        ev, forma_loc, forma_vis,
+        None if ev.get("historial_aislado") or deporte in DEPORTES_SIN_CUPO_COMERCIAL else fuente_highlightly,
+        None if ev.get("historial_aislado") or deporte in DEPORTES_SIN_CUPO_COMERCIAL else fuente_oddspapi,
+        id_vis, libro_resultados=None if ev.get("historial_aislado") or deporte in DEPORTES_SIN_CUPO_COMERCIAL else libro_resultados
     )
     h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
     calendario_util = bool(forma_loc and forma_vis and all(p.get("_calendario_completo") for p in forma_loc + forma_vis))
@@ -626,7 +650,7 @@ def _procesar_evento(ev, st, ahora_ts):
         "racha_local": motor_mismatches.evaluar_momentum(forma_loc, id_loc),
         "racha_visita": motor_mismatches.evaluar_momentum(forma_vis, id_vis),
     }
-    if libro_resultados:
+    if libro_resultados and not ev.get("historial_aislado") and deporte not in DEPORTES_SIN_CUPO_COMERCIAL:
         try:
             datos_extra["elo"] = motor_mismatches.evaluar_elo(libro_resultados.consulta_elo(deporte, nom_loc, nom_vis))
         except Exception as exc:
@@ -663,6 +687,7 @@ def _procesar_evento(ev, st, ahora_ts):
             f"Magnitud: {resultado.get('magnitud', 'Moderada')}; calidad: {resultado.get('calidad_datos', 'Limitada')}; "
             f"{resultado.get('grupos_independientes', 1)} familia(s) de señales, sin independencia garantizada",
             fuentes=ev.get("_fuentes_detectadas"),
+            tipo="ASIMETRÍA EXPERIMENTAL" if deporte in DEPORTES_SIN_CUPO_COMERCIAL else "MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA",
         )
         st["alertas"] += 1
         if entregado:
@@ -677,6 +702,9 @@ def _procesar_evento(ev, st, ahora_ts):
 # Agregación multi-fuente
 # ---------------------------------------------------------------------------
 _PRIORIDAD_FUENTE = {
+    "bbs": 4,
+    "cev": -4,
+    "fivb": -3,
     "wta": -2,
     "pwhl": -1,
     "highlightly": 0,
@@ -701,12 +729,14 @@ def _prioridad_evento(ev):
     return prioridad
 
 
-def _coincide_con_candidato(candidato, firma, inicio):
+def _coincide_con_candidato(candidato, firma, inicio, observacion=None):
     if _firma_evento(candidato) != firma:
         return False
     inicio_c = _inicio_evento(candidato)
     if not inicio or not inicio_c:
         return False
+    if candidato.get("deporte") == "Softball" and observacion:
+        return candidato.get("id") == observacion.get("id")  # dobles jornadas son partidos distintos
     mismo_dia = _clave_canonica_evento(candidato).rsplit("|", 1)[-1] == datetime.fromtimestamp(
         inicio, timezone.utc).strftime("%Y%m%d")
     return mismo_dia or abs(inicio_c - inicio) <= TOLERANCIA_FECHA_S
@@ -714,6 +744,9 @@ def _coincide_con_candidato(candidato, firma, inicio):
 
 def _recolectar_eventos(resumen):
     fuentes = [
+        (fuente_cev, "cev"),
+        (fuente_fivb, "fivb"),
+        (fuente_bbs, "bbs"),
         (fuente_wta, "wta"),
         (fuente_pwhl, "pwhl"),
         (fuente_highlightly, "highlightly"),
@@ -740,6 +773,8 @@ def _recolectar_eventos(resumen):
             continue
 
         for deporte in DEPORTES_RADAR:
+            if deporte in DEPORTES_SIN_CUPO_COMERCIAL and nombre != "espn":
+                continue  # los nuevos deportes nunca consultan planes comerciales
             try:
                 eventos = modulo.obtener_eventos(deporte) or []
             except Exception as exc:
@@ -757,7 +792,7 @@ def _recolectar_eventos(resumen):
                 clave_actual = None
                 if firma and inicio:
                     for clave_c in por_firma.get(firma, []):
-                        if _coincide_con_candidato(candidatos[clave_c], firma, inicio):
+                        if _coincide_con_candidato(candidatos[clave_c], firma, inicio, observacion):
                             clave_actual = clave_c
                             break
                 if clave_actual is None:
@@ -946,7 +981,7 @@ def ejecutar_barrido_radar():
     ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
     ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())
     U.guardar_caches((fuente_api_football, fuente_highlightly, fuente_thesportsdb, fuente_theoddsapi,
-                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl))
+                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs))
     ESTADO["presupuestos"] = _resumen_presupuestos()
     ESTADO["barridos"] += 1
     ESTADO["ultimo_barrido_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -973,11 +1008,18 @@ def _resumen_presupuestos():
     if fuente_pwhl and fuente_pwhl.disponible():
         p = fuente_pwhl.presupuesto
         salida["pwhl"] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes()}
+    for modulo in (fuente_fivb, fuente_cev, fuente_bbs):
+        if modulo and modulo.disponible():
+            p = modulo.presupuesto
+            salida[modulo.FUENTE] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes()}
     return salida
 
 
 def _fuentes_activas():
     fuentes = []
+    for modulo, nombre in ((fuente_fivb, "FIVB/VIS"), (fuente_cev, "CEV"), (fuente_bbs, "Big Balls Sports Data (WNBA)")):
+        if modulo and modulo.disponible():
+            fuentes.append(nombre)
     if fuente_wta and fuente_wta.disponible():
         fuentes.append("WTA oficial (cuadros, WC e historial)")
     if fuente_pwhl and fuente_pwhl.disponible():

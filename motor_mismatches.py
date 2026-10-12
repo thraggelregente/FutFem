@@ -30,6 +30,7 @@ UMBRAL_BAJAS = {"Basketball": 3, "Ice Hockey": 3, "Soccer": 3, "Handball": 3, "V
 TOPE_DIFERENCIA = {
     "Soccer": 4, "Ice Hockey": 4, "Field Hockey": 4, "Futsal": 6,
     "Handball": 15, "Basketball": 30, "Rugby": 30,
+    "Softball": 8, "Lacrosse": 10,
 }
 
 
@@ -79,6 +80,7 @@ def obtener_umbral_deporte(deporte):
         "Waterpolo": 4.0, "Field Hockey": 2.5,
         "Volleyball": 3.0, "Table Tennis": 3.0, "Badminton": 2.5,
         "Handball": 8.0, "Basketball": 20.0, "Rugby": 20.0,
+        "Softball": 4.0, "Lacrosse": 5.0,
         "Cricket": None,
     }
     return umbrales.get(deporte, 5.0)
