@@ -3,11 +3,11 @@
 ## Qué hace esta versión
 
 - Analiza exclusivamente competiciones con evidencia positiva de ser femeninas: nombre femenino explícito o ID de competición agregado a una lista permitida.
-- Combina Highlightly, API-Sports, OpenLigaDB, TheSportsDB V1, OddsPapi (solo fixtures) y ESPN. ESPN ya no gana por ser la primera fuente; se priorizan los proveedores con más contexto deportivo.
+- Combina Highlightly, API-Sports, OpenLigaDB, TheSportsDB V1, OddsPapi (solo fixtures) y ESPN, además de los nuevos datos oficiales WTA y PWHL. ESPN ya no gana por ser la primera fuente; se priorizan los proveedores con más contexto deportivo.
 - Deduplica por nombres de equipos normalizados y día UTC, manteniendo las observaciones de todas las fuentes para buscar historial alternativo.
 - No bloquea un partido porque un análisis haya quedado incompleto o todavía no tenga historial. Solo registra una clave al entregar la alerta a Telegram.
 - No consulta, calcula, almacena ni muestra cuotas, mercados, bookmakers ni probabilidades implícitas. El módulo `tracker_cuotas_smart.py` queda como stub de compatibilidad sin llamadas de red, y `sugerir_mercado()` devuelve `None`.
-- Evita el endpoint de ITF que había devuelto 403/404. No intenta eludir su WAF; el calendario WTA queda cubierto por el scoreboard de ESPN y su ranking si ESPN lo entrega.
+- Evita el endpoint de ITF que había devuelto 403/404. No intenta eludir su WAF; se integran los cuadros públicos WTA cuando tienen horario verificable, con ESPN como respaldo. La cobertura ITF sigue siendo incompleta.
 
 ## Archivos
 
@@ -16,7 +16,7 @@ Subí todos los archivos del ZIP al mismo directorio del repositorio. `render.ya
 ```bash
 python -m pip install -r requirements.txt
 python -m py_compile *.py
-python test_radar.py
+python -m unittest -v test_radar test_proveedores_tenis
 ```
 
 Los tests son offline: no envían mensajes reales a Telegram ni consumen las cuotas de las API. Que los tests pasen no prueba que una clave o el plan del proveedor estén autorizados ni garantiza que un feed contenga partidos el día de la prueba.
@@ -61,10 +61,10 @@ La lista blanca de ligas es la opción preferida cuando el nombre de la competic
 
 - API-Sports conserva contadores por API deportiva. Highlightly separa los hosts deportivos y comparte un contador solo para All Sports. Los contadores nuevos usan claves `v2`; no se borra Redis. Las cabeceras del proveedor corrigen el saldo disponible después de cada respuesta.
 - En endpoints medidos no hay reintentos HTTP automáticos ocultos. Los intentos sin respuesta se reservan conservadoramente; el saldo del proveedor sigue siendo la referencia final.
-- El orden de análisis rota por último intento persistido. Participantes indefinidos y tenis sin ambos rankings no consumen el máximo de análisis. Las búsquedas por nombre mantienen su tope y enfriamiento.
+- El orden de análisis rota por último intento persistido. Participantes indefinidos y tenis sin ambos rankings ni WC oficial no consumen el máximo de análisis. Las búsquedas por nombre mantienen su tope y enfriamiento.
 - Las identidades distinguen deporte, juveniles y reservas. Los historiales deben contener al equipo, estar terminados, no ser futuros y pasar la ventana temporal. El libro reconstruye las firmas desde los nombres almacenados; no puede recuperar nombres previamente truncados ni identidades ambiguas entre países.
 - Forma, triangulación, H2H, rachas y Elo comparten un máximo de cuatro puntos. Se exige evidencia de diferencia de nivel. Calendario y bajas no bastan por sí solos. Las familias de señales no se presentan como estadísticamente independientes. La magnitud y la calidad temporal/muestral se muestran por separado; no son probabilidades calibradas.
-- La tabla se consulta también como evidencia inicial y como posible contradicción, dentro del presupuesto propio de Highlightly. Para eventos de Highlightly se utiliza su liga/temporada y se exige que ambos equipos estén en el mismo grupo.
+- La tabla se consulta también como evidencia inicial y como posible contradicción, priorizando ESPN y tablas derivadas de OpenLigaDB, después API-Sports y Highlightly. Para eventos de Highlightly se utiliza su liga/temporada y se exige que ambos equipos estén en el mismo grupo.
 
 ## Tenis
 
@@ -72,12 +72,14 @@ La lista blanca de ligas es la opción preferida cuando el nombre de la competic
 
 Las brechas de ranking generan **candidatos**, no una afirmación de mismatch confirmado sin contexto reciente. Los cortes siguen siendo heurísticos y requieren evaluación histórica antes de afirmar precisión. El umbral general de equipos sigue siendo cuatro puntos.
 
-Las rutas de Sackmann configuradas respondieron 404 en la comprobación. No se reemplazaron por una fuente no validada: forma y superficie quedan explícitamente no disponibles. `TENIS_DATASET_URL` puede configurar una plantilla CSV compatible con `{anio}` cuando exista una fuente verificada; el dataset debe tener resultados en los últimos 45 días. Tener un ranking completo no resuelve la falta de resultados recientes ITF.
+El nuevo motor utiliza perfiles e historial del sitio oficial WTA: entry WC, superficie, experiencia registrada y forma ante bandas comparables de rivales. Una WC por sí sola no suma puntos. Se conserva el candidato por ranking cuando falta contexto, y no se confunde ausencia de datos con condición amateur. La cobertura ITF no es completa; la paginación validada solo certifica el feed consultado.
+
+Los límites, restricciones de planes y comprobaciones públicas están en [PROVEEDORES.md](PROVEEDORES.md).
 
 ## Validación
 
-Ejecutar `python -m unittest -v test_radar`. Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
+Ejecutar `python -m unittest -v test_radar test_proveedores_tenis` (31 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
 
-Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas ni el despliegue de Render.
+Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas; el despliegue anterior se verificó mediante su endpoint de salud.
 
 El endpoint de salud informa `starting`, `ok` o `degraded`, el último barrido, análisis y presupuestos. Devuelve HTTP 503 si el barrido deja de avanzar después de la gracia de arranque. Los reinicios reales del proveedor pueden diferir del calendario UTC de los contadores internos.

@@ -101,10 +101,10 @@ def _presupuesto(deporte, base=None):
 
 
 _cache_eventos = U.CacheTTL(max(30, int(os.environ.get("HIGHLIGHTLY_CACHE_MINUTES", "240"))) * 60)
-_cache_equipo = U.CacheTTL(12 * 3600)
-_cache_forma = U.CacheTTL(3 * 3600)
-_cache_h2h = U.CacheTTL(6 * 3600)
-_cache_tabla = U.CacheTTL(6 * 3600)
+_cache_equipo = U.CachePersistente("hl_equipo", 43200)
+_cache_forma = U.CachePersistente("hl_forma", 10800)
+_cache_h2h = U.CachePersistente("hl_h2h", 21600)
+_cache_tabla = U.CachePersistente("hl_tabla", 21600)
 _deshabilitada = {"motivo": ""}
 _base_ok = {}
 _avisos = set()
@@ -269,6 +269,7 @@ def _como_historico(n, equipo_id=None, id_interno=None):
         "id_local": id_local, "nom_local": n["nom_local"],
         "id_visita": id_visita, "nom_visita": n["nom_visita"],
         "puntos_local": n["pl"], "puntos_visita": n["pv"],
+        "_calendario_completo": True,  # este conversor se usa para /last-five-games y H2H
     }
 
 
@@ -393,7 +394,7 @@ def _buscar_equipo(nombre, deporte="Soccer"):
     if data is None:
         return None  # no se cachea el fallo
     equipo_id = _elegir_equipo(nombre, _lista(data))
-    _cache_equipo.set(clave, equipo_id)
+    _cache_equipo.set(clave, equipo_id, ttl=None if equipo_id else 6 * 3600)
     return equipo_id
 
 
@@ -417,8 +418,9 @@ def _forma_cruda(deporte, equipo_id):
         return valor
     data = _get(deporte, "/last-five-games", {"teamId": equipo_id})
     if data is None:
+        _cache_forma.set(clave, [], ttl=30 * 60)
         return []
-    partidos = [n for n in (_normalizar_partido(m) for m in _lista(data)) if n and n["pl"] is not None]
+    partidos = [n for n in (_normalizar_partido(m) for m in _lista(data)) if n and n["pl"] is not None and n["pv"] is not None and str(equipo_id) in (n["id_local"], n["id_visita"])]
     partidos.sort(key=lambda n: n["fecha"], reverse=True)
     L.ingestar(deporte, [_como_historico(n) for n in partidos], "highlightly")
     _cache_forma.set(clave, partidos)
@@ -492,7 +494,7 @@ def _num(x, defecto=0):
 
 def _fila_tabla(f):
     team = f.get("team") or {}
-    t = f.get("total") or {}
+    t = f.get("total") or f
     victorias = t.get("wins")
     derrotas = t.get("loses", t.get("losses", t.get("lost")))
     if team.get("id") is None or (victorias is None and derrotas is None):

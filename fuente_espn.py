@@ -375,6 +375,40 @@ def historial_equipo(evento, lado):
     return _historial_liga(sport, slug).get(tid, [])
 
 
+_cache_tablas = U.CachePersistente("espn_tablas", 6 * 3600)
+
+
+def tabla_partido(evento):
+    sport, slug = evento.get("liga_ref") or (None, None)
+    if not sport or sport == "tennis":
+        return None, 0
+    hit, data = _cache_tablas.get((sport, slug))
+    if not hit:
+        data = U.get_json(f"https://site.api.espn.com/apis/v2/sports/{sport}/{slug}/standings", FUENTE, timeout=12)
+        _cache_tablas.set((sport, slug), data, ttl=None if data else 3600)
+    def grupos(nodo):
+        if not isinstance(nodo, dict):
+            return
+        if nodo.get("standings"):
+            yield nodo["standings"].get("entries", [])
+        for hijo in nodo.get("children", []):
+            yield from grupos(hijo)
+    il, iv = str(evento["local"]["id"]), str(evento["visita"]["id"])
+    for grupo in grupos(data):
+        filas = {}
+        for entrada in grupo:
+            tid = str((entrada.get("team") or {}).get("id") or "")
+            stats = {s.get("name"): s.get("value") for s in entrada.get("stats", [])}
+            if stats.get("wins") is None or stats.get("losses") is None:
+                continue
+            filas[tid] = {"posicion": int(stats.get("rank") or 0), "victorias": int(stats["wins"]),
+                          "empates": int(stats.get("ties") or stats.get("draws") or 0), "derrotas": int(stats["losses"]),
+                          "dif_neta": int(stats.get("pointDifferential") or stats.get("differential") or 0)}
+        if il in filas and iv in filas:
+            return filas, len(filas)
+    return None, 0
+
+
 # ---------------------------------------------------------------------------
 # BAJAS CONFIRMADAS (endpoint /injuries de ESPN, solo para las ligas configuradas)
 # ---------------------------------------------------------------------------

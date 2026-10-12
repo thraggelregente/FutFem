@@ -1,4 +1,4 @@
-﻿"""OpenLigaDB: fixtures y resultados de ligas femeninas de fÃºtbol.
+"""OpenLigaDB: fixtures y resultados de ligas femeninas de fÃºtbol.
 
 Fuente comunitaria sin API key ni cuota publicada. El acceso se limita a las ligas
 que el operador incluye explÃ­citamente en OPENLIGADB_WOMENS_LEAGUES; nunca se
@@ -48,12 +48,37 @@ def _config_ligas():
 
 
 _LIGAS = _config_ligas()
-_cache = U.CacheTTL(CACHE_MINUTOS * 60)
+_cache = U.CachePersistente("openliga_temporada", 7200)
 _avisos = set()
 
 
 def disponible():
     return bool(_LIGAS)
+
+
+def tabla_partido(evento):
+    ref = evento.get("liga_ref")
+    if not ref or len(ref) != 2 or ref[0] not in {"ffb1", "ffb2", "fbl1", "fbl2"}:
+        return None, 0
+    partidos = _partidos_liga(*ref) or []
+    filas = {}
+    for p in partidos:
+        if not p.get("MatchIsFinished") or _timestamp(p.get("MatchDateTimeUTC")) > datetime.now(timezone.utc).timestamp():
+            continue
+        a, b = _equipo(p, "Team1"), _equipo(p, "Team2")
+        pl, pv = _resultado_final(p)
+        if not a or not b or pl is None or pv is None:
+            continue
+        for equipo, propios, rivales in ((a, pl, pv), (b, pv, pl)):
+            f = filas.setdefault(equipo["id"], {"victorias": 0, "empates": 0, "derrotas": 0, "dif_neta": 0, "puntos": 0})
+            f["dif_neta"] += propios - rivales
+            f["victorias" if propios > rivales else "empates" if propios == rivales else "derrotas"] += 1
+            f["puntos"] += 3 if propios > rivales else 1 if propios == rivales else 0
+    # Clasificación derivada, no tabla oficial con sanciones o desempates particulares.
+    for pos, (_tid, f) in enumerate(sorted(filas.items(), key=lambda x: (-x[1]["puntos"], -x[1]["dif_neta"])), 1):
+        f["posicion"] = pos
+    il, iv = str(evento["local"]["id"]), str(evento["visita"]["id"])
+    return (filas, len(filas)) if il in filas and iv in filas else (None, 0)
 
 
 def _avisar_una_vez(clave, mensaje):

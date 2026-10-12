@@ -52,6 +52,9 @@ PROFUNDIDAD = os.environ.get("ODDSPAPI_PROFUNDIDAD", "0").strip() == "1"
 HISTORIAL_DIARIO = os.environ.get("ODDSPAPI_HISTORIAL_DIARIO", "1").strip().lower() not in {"0", "false", "no", "off"}
 HISTORIAL_HORAS = max(12, int(os.environ.get("ODDSPAPI_HISTORIAL_HORAS", "24")))
 HISTORIAL_DIAS_ATRAS = max(1, min(7, int(os.environ.get("ODDSPAPI_HISTORIAL_DIAS", "3"))))
+# Sin sportId, la documentación exige una ventana estrictamente inferior a 48 h.
+HISTORIAL_VENTANA_HORAS = min(47, HISTORIAL_DIAS_ATRAS * 24)
+_ritmo = U.RitmoPedidos(20, minimo_segundos=2.05)
 LIMITE_MENSUAL_LOCAL = max(1, int(os.environ.get("ODDSPAPI_MONTHLY_LIMIT", "180")))
 RESERVA_CUOTA_REAL = max(0, int(os.environ.get("ODDSPAPI_RESERVA_CUOTA_REAL", "25")))
 CONTROL_CUOTA_REAL = os.environ.get("ODDSPAPI_CONTROL_CUOTA_REAL", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -169,6 +172,7 @@ def _get(ruta, params=None, exigir=1):
     parametros = dict(params or {})
     parametros["apiKey"] = API_KEY
     info = {}
+    _ritmo.esperar()
     data = U.get_json(f"{BASE}{ruta}", FUENTE, headers=_headers(), params=parametros, timeout=20, info=info, reintentar=False)
     status = info.get("status")
     if not es_account:
@@ -337,13 +341,15 @@ def _terminados_recientes():
     estado = U.cargar_json(ARCHIVO_HISTORIAL, {})
     estado = estado if isinstance(estado, dict) else {}
     ahora = time.time()
+    if ahora < float(estado.get("sin_scores_hasta", 0) or 0):
+        return 0
     if ahora - float(estado.get("ultimo", 0) or 0) < HISTORIAL_HORAS * 3600:
         return 0
     if ahora - float(estado.get("intento", 0) or 0) < 3 * 3600:
         return 0  # un intento fallido no se repite en cada barrido
     if not presupuesto.puede_gastar(2):  # deja siempre 1 pedido para el listado de fixtures
         return 0
-    desde = datetime.now(timezone.utc) - timedelta(days=HISTORIAL_DIAS_ATRAS)
+    desde = datetime.now(timezone.utc) - timedelta(hours=HISTORIAL_VENTANA_HORAS)
     estado["intento"] = ahora
     U.guardar_json(ARCHIVO_HISTORIAL, estado)
     data = _get("/fixtures", {
@@ -362,6 +368,10 @@ def _terminados_recientes():
         por_deporte.setdefault(partido["deporte"], []).append(_como_historico(partido))
     nuevos = sum(L.ingestar(dep, lista, "oddspapi") for dep, lista in por_deporte.items())
     estado["ultimo"] = ahora
+    # El listado documentado no garantiza scores: no insistir a diario si no los incluye.
+    if data and not nuevos and not any(_normalizar(r) and _normalizar(r)["pl"] is not None for r in data):
+        estado["sin_scores_hasta"] = ahora + 7 * 86400
+        U.log("[oddspapi] fixtures sin marcadores: historial pausado 7 días; no se compra /scores por cada evento")
     U.guardar_json(ARCHIVO_HISTORIAL, estado)
     U.log(f"[oddspapi] feed de terminados: {len(data)} fixtures, {nuevos} resultados femeninos nuevos en el libro")
     return nuevos
