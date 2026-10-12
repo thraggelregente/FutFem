@@ -1,0 +1,16 @@
+name: Radar regressions
+on:
+  push:
+    branches: [main, feat/provider-depth]
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v test_radar test_proveedores_tenis
+      - run: python -m compileall -q .

@@ -83,8 +83,8 @@ presupuesto = U.PresupuestoMultiple(
     reserva_mensual=0,
 )
 _real = {"restantes": None}
-_cache_catalogo = U.CacheTTL(6 * 3600)
-_cache_eventos = U.CacheTTL(CACHE_MINUTOS * 60)
+_cache_catalogo = U.CachePersistente("theodds_catalogo", 21600)
+_cache_eventos = U.CachePersistente("theodds_eventos", 2700)
 _deshabilitada = {"motivo": ""}
 _avisos = set()
 _lock = threading.Lock()
@@ -117,7 +117,7 @@ def _get(ruta, params=None):
     if es_scores:
         if not presupuesto.puede_gastar(COSTO_SCORES):
             return None
-        if _real["restantes"] is not None and _real["restantes"] <= RESERVA_REAL:
+        if _real["restantes"] is not None and _real["restantes"] - COSTO_SCORES < RESERVA_REAL:
             _avisar_una_vez(("reserva", time.strftime("%Y-%m")),
                             f"[theoddsapi] resultados pausados: saldo real {_real['restantes']} <= reserva {RESERVA_REAL}")
             return None
@@ -137,7 +137,7 @@ def _get(ruta, params=None):
             costo = int(float(cabeceras.get("x-requests-last", COSTO_SCORES)))
         except (TypeError, ValueError):
             costo = COSTO_SCORES
-        presupuesto.registrar(max(1, costo))
+        presupuesto.registrar(max(0, costo))  # x-requests-last=0 es un costo real nulo, no uno inventado
         U.log(f"[theoddsapi] scores {ruta}: {presupuesto.resumen()}; saldo real={_real['restantes']}")
     if status == 401:
         _deshabilitada["motivo"] = "HTTP 401: ODDS_API_KEY invÃ¡lida"

@@ -92,12 +92,15 @@ def _presupuesto(deporte):
 
 
 _cache_eventos = U.CacheTTL(8 * 3600)
-_cache_temporada = U.CacheTTL(6 * 3600)
+_cache_temporada = U.CachePersistente("apis_temporada", 21600)
 _deshabilitada = {"motivo": ""}
 _deportes_sin_permiso = set()
 _avisos = set()
 _bloqueadas_hasta = {}
 _reintentar_despues = {}
+_ritmos = {}
+_cache_cobertura = U.CachePersistente("apis_cobertura", 7 * 86400)
+_cache_tablas = U.CachePersistente("apis_tablas", 6 * 3600)
 
 
 def _avisar_una_vez(clave, mensaje):
@@ -143,6 +146,7 @@ def _get(deporte, ruta, params):
                         "se reanuda maÃ±ana (UTC)")
         return None
 
+    _ritmos.setdefault(deporte, U.RitmoPedidos(8)).esperar()
     info = {}
     data = U.get_json(f"https://{host}{ruta}", f"{FUENTE}_{deporte}",
                       headers={"x-apisports-key": API_KEY}, params=params, timeout=15, info=info, reintentar=False)
@@ -356,3 +360,49 @@ def historial_equipo(evento, lado):
         return []
     tid = (evento.get(lado) or {}).get("id")
     return _historial_liga(deporte, liga_id, season).get(tid, [])
+
+
+def tabla_partido(evento):
+    """Tabla de fútbol solo cuando la matriz oficial declara cobertura."""
+    ref = evento.get("liga_ref")
+    if evento.get("deporte") != "Soccer" or not ref or len(ref) != 3:
+        return None, 0
+    deporte, liga, season = ref
+    clave = (deporte, str(liga), season)
+    hit, grupos = _cache_tablas.get(clave)
+    if not hit:
+        cubierto, coverage = _cache_cobertura.get(clave)
+        if not cubierto:
+            ligas = _get(deporte, "/leagues", {"id": liga, "season": season})
+            coverage = None
+            for l in ligas or []:
+                for temporada in l.get("seasons", []):
+                    if str(temporada.get("year")) == str(season):
+                        coverage = (temporada.get("coverage") or {}).get("standings")
+            _cache_cobertura.set(clave, coverage, ttl=7 * 86400 if coverage is not None else 6 * 3600)
+        if coverage is not True:
+            return None, 0
+        raw = _get(deporte, "/standings", {"league": liga, "season": season})
+        grupos = []
+        for res in raw or []:
+            league = res.get("league") or {}
+            if str(league.get("id")) != str(liga) or str(league.get("season")) != str(season):
+                continue
+            for grupo in league.get("standings", []):
+                filas = {}
+                for f in grupo:
+                    total, goals = f.get("all") or {}, (f.get("all") or {}).get("goals") or {}
+                    tid = str((f.get("team") or {}).get("id") or "")
+                    if not tid or any(total.get(k) is None for k in ("win", "draw", "lose", "played")):
+                        continue
+                    filas[tid] = {"posicion": int(f.get("rank") or 0), "victorias": int(total["win"]),
+                                  "empates": int(total["draw"]), "derrotas": int(total["lose"]),
+                                  "dif_neta": int(goals.get("for") or 0) - int(goals.get("against") or 0)}
+                if filas:
+                    grupos.append(filas)
+        _cache_tablas.set(clave, grupos, ttl=6 * 3600 if grupos else 3600)
+    il, iv = str(evento["local"]["id"]), str(evento["visita"]["id"])
+    for grupo in grupos or []:
+        if il in grupo and iv in grupo:
+            return grupo, len(grupo)
+    return None, 0

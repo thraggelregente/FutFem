@@ -186,3 +186,18 @@ services:
         value: "60"
       - key: ENFRIAMIENTO_MAX_MIN
         value: "360"
+      # Fuentes oficiales nuevas: sin claves privadas. Los topes son internos del bot.
+      - key: WTA_API_ACTIVO
+        value: "1"
+      - key: WTA_API_DIA
+        value: "100"
+      - key: WTA_API_SEMANA
+        value: "650"
+      - key: WTA_API_MES
+        value: "3000"
+      - key: WTA_API_MAX_POR_CICLO
+        value: "16"
+      - key: WTA_API_MAX_TORNEOS
+        value: "4"
+      - key: PWHL_ACTIVO
+        value: "1"

@@ -1,4 +1,4 @@
-﻿"""TheSportsDB V1 (key pÃºblica 123): fixtures femeninos e historial reciente, sin cuotas.
+"""TheSportsDB V1 (key pÃºblica 123): fixtures femeninos e historial reciente, sin cuotas.
 
 QuÃ© aporta, todo gratis y sin cuota diaria (solo el lÃ­mite de 30 requests/minuto, que esta fuente
 respeta con un limitador propio):
@@ -66,8 +66,8 @@ def _leer_ligas():
 _LIGAS_FEMENINAS = _leer_ligas()
 _cache_eventos = U.CacheTTL(CACHE_MINUTOS * 60)
 _cache_ligas = U.CacheTTL(24 * 3600)
-_cache_busqueda = U.CacheTTL(12 * 3600)
-_cache_forma = U.CacheTTL(3 * 3600)
+_cache_busqueda = U.CachePersistente("tsdb_busqueda", 43200)
+_cache_forma = U.CachePersistente("tsdb_forma", 10800)
 _avisos = set()
 _ultimo_aviso_sin_ligas = 0.0
 _lock = threading.Lock()
@@ -281,6 +281,25 @@ def obtener_eventos(deporte_interno):
             if ts <= now or ts > now + 36 * 3600:
                 continue
             by_id[normalized["id"]] = normalized
+            # Identidades femeninas verificadas del calendario, sin searchteams gratuito.
+            for lado in ("local", "visita"):
+                j = normalized[lado]
+                _cache_busqueda.set(f"{deporte_tsdb}|{U.normalizar(j['nombre'])}", str(j["id"]))
+
+    # La key 123 devuelve un eventslast incompleto: recolectar resultados por liga/día
+    # y acumularlos en el libro, sin presentarlos como historial exhaustivo.
+    for liga_id in liga_ids:
+        clave_resultados = ("resultados", deporte_tsdb, liga_id, ahora.date().isoformat())
+        hit, _ = _cache_busqueda.get(clave_resultados)
+        if hit:
+            continue
+        fecha_ayer = (ahora - timedelta(days=1)).date().isoformat()
+        crudos = _eventos_fecha(deporte_tsdb, fecha_ayer, liga_id)
+        if crudos is not None:
+            partidos = [p for e in crudos if str(e.get("idLeague") or "") == str(liga_id)
+                        if (p := _normalizar_terminado(e, time.time(), exigir_final=True))]
+            L.ingestar(deporte_interno, partidos, FUENTE)
+            _cache_busqueda.set(clave_resultados, True, ttl=24 * 3600)
 
     if by_id:
         U.log(f"[thesportsdb/{deporte_interno}] {len(by_id)} partidos femeninos capturados")
@@ -305,13 +324,15 @@ def _entero(valor):
         return None
 
 
-def _normalizar_terminado(ev, ahora_ts):
+def _normalizar_terminado(ev, ahora_ts, exigir_final=False):
     """Partido ya jugado con marcador en el formato interno del radar, o None."""
     if not isinstance(ev, dict):
         return None
     if str(ev.get("strPostponed") or "").strip().lower() == "yes":
         return None
     estado = str(ev.get("strStatus") or "").strip().lower()
+    if exigir_final and estado not in {"ft", "aet", "pen", "finished", "match finished", "final", "ended", "after extra time"}:
+        return None
     if any(token in estado for token in _NO_JUGADOS):
         return None
     id_local, id_visita = ev.get("idHomeTeam"), ev.get("idAwayTeam")
@@ -428,6 +449,8 @@ def _buscar_equipo(nombre, deporte):
     hit, valor = _cache_busqueda.get(clave)
     if hit:
         return valor
+    if API_KEY == "123":
+        return None  # Documentación: searchteams Free está limitado a Arsenal.
     data = _get("searchteams.php", {"t": nombre})
     if not isinstance(data, dict):
         return None  # fallo de red: se reintenta en el prÃ³ximo barrido

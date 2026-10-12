@@ -300,6 +300,90 @@ def guardar_json(nombre, datos):
         return False
 
 
+class CachePersistente:
+    """Caché acotada que se guarda una vez por barrido, no una escritura por lectura."""
+    def __init__(self, nombre, ttl_segundos, max_items=256):
+        self.nombre = f"cache_{nombre}.json"
+        self.ttl = ttl_segundos
+        self.max_items = max_items
+        self._datos = cargar_json(self.nombre, {})
+        if isinstance(self._datos, dict) and self._datos.get("v") == 1 and isinstance(self._datos.get("z"), str):
+            import base64
+            import zlib
+            try:
+                self._datos = json.loads(zlib.decompress(base64.b64decode(self._datos["z"])))
+            except (ValueError, TypeError, zlib.error):
+                self._datos = {}
+        if not isinstance(self._datos, dict):
+            self._datos = {}
+        self._sucio = False
+
+    @staticmethod
+    def _clave(clave):
+        return json.dumps(clave, sort_keys=True, ensure_ascii=False)
+
+    def get(self, clave):
+        item = self._datos.get(self._clave(clave))
+        if isinstance(item, list) and len(item) == 2:
+            try:
+                if time.time() < float(item[0]):
+                    return True, item[1]
+            except (TypeError, ValueError):
+                pass
+        return False, None
+
+    def set(self, clave, valor, ttl=None):
+        self._datos[self._clave(clave)] = [time.time() + (self.ttl if ttl is None else ttl), valor]
+        self._sucio = True
+        if len(self._datos) > self.max_items:
+            self.limpiar()
+
+    def limpiar(self):
+        ahora = time.time()
+        self._datos = {k: v for k, v in self._datos.items()
+                       if isinstance(v, list) and len(v) == 2 and isinstance(v[0], (int, float)) and v[0] > ahora}
+        if len(self._datos) > self.max_items:
+            self._datos = dict(sorted(self._datos.items(), key=lambda x: x[1][0], reverse=True)[:self.max_items])
+
+    def guardar(self):
+        if not self._sucio:
+            return
+        self.limpiar()
+        import base64
+        import zlib
+        comprimido = base64.b64encode(zlib.compress(json.dumps(self._datos, ensure_ascii=False).encode("utf-8"))).decode("ascii")
+        if guardar_json(self.nombre, {"v": 1, "z": comprimido}):
+            self._sucio = False
+
+
+class RitmoPedidos:
+    """Tope por minuto independiente del presupuesto diario."""
+    def __init__(self, max_minuto=8, minimo_segundos=0):
+        from collections import deque
+        self._pedidos = deque()
+        self.max_minuto = max_minuto
+        self.minimo_segundos = minimo_segundos
+
+    def esperar(self):
+        ahora = time.monotonic()
+        while self._pedidos and ahora - self._pedidos[0] >= 60:
+            self._pedidos.popleft()
+        espera = max(0, self.minimo_segundos - (ahora - self._pedidos[-1])) if self._pedidos else 0
+        if len(self._pedidos) >= self.max_minuto:
+            espera = max(espera, 60 - (ahora - self._pedidos[0]) + 0.05)
+        if espera:
+            time.sleep(min(60, espera))
+        self._pedidos.append(time.monotonic())
+
+
+def guardar_caches(modulos):
+    for modulo in modulos:
+        if modulo is not None:
+            for valor in vars(modulo).values():
+                if isinstance(valor, CachePersistente):
+                    valor.guardar()
+
+
 def _parsear_iso(texto):
     try:
         f = datetime.fromisoformat(str(texto).replace("Z", "+00:00"))
@@ -360,6 +444,7 @@ class PresupuestoDiario:
         self.limite = max(1, int(limite))
         self.reserva = max(0, int(reserva))
         self.agotado_hasta_manana = False
+        self.saldo_proveedor = None
         crudo = cargar_json(f"presupuesto_{nombre}.json", {})
         hoy = self._hoy()
         if isinstance(crudo, dict) and crudo.get("fecha") == hoy:
@@ -392,7 +477,8 @@ class PresupuestoDiario:
         self.usadas += n
         if restantes_reales is not None:
             try:
-                self.usadas = max(self.usadas, self.limite - int(restantes_reales))
+                self.saldo_proveedor = int(restantes_reales)
+                self.usadas = max(self.usadas, self.limite - self.saldo_proveedor)
             except (TypeError, ValueError):
                 pass
         guardar_json(f"presupuesto_{self.nombre}.json", {"fecha": self.fecha, "usadas": self.usadas})
