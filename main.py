@@ -24,6 +24,7 @@ from typing import Any
 import requests
 
 import utilidades as U
+import mensajes
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "provider-depth-v1",
+            "revision": "telegram-presentation-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -258,20 +259,8 @@ def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, fav
     if motor_mismatches is None:
         return False
     nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
-    esc = html.escape
-    detalles_txt = "\n".join(f"• {esc(str(d))}" for d in list(alertas_base)[:10])
-    mensaje = (
-        f"🚨 <b>{esc(tipo)}</b>\n\n"
-        f"🏅 <b>Deporte:</b> {esc(str(deporte))}\n"
-        f"🏆 <b>Competición:</b> {esc(str(torneo))}\n"
-        f"⚔️ <b>Encuentro:</b> {esc(str(nom_loc))} vs {esc(str(nom_vis))}\n"
-        f"📌 <b>Favorito:</b> {esc(str(nom_fav))} (ventaja deportiva)\n"
-        f"🕒 <b>Horario:</b> {esc(str(hora_txt))}\n"
-        f"📡 <b>Fuentes:</b> {esc(', '.join(str(f) for f in (fuentes or [])) or 'sin dato')}\n\n"
-        f"📊 <b>Evidencia:</b>\n{detalles_txt or 'Sin detalle adicional.'}\n\n"
-        f"🔎 <b>Evaluación de evidencia:</b> {esc(str(confianza))}\n"
-        "<i>Estimación basada en datos deportivos; no se usan cuotas ni mercados.</i>"
-    )
+    mensaje = mensajes.alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base,
+                              nom_fav, confianza, fuentes, tipo)
     entregado = enviar_telegram(mensaje)
     U.log(
         f"[alerta] {deporte}: {nom_loc} vs {nom_vis}; ventaja={nom_fav}; "
@@ -1019,12 +1008,7 @@ def main():
     U.log(f"Fuentes configuradas: {', '.join(fuentes) or 'ninguna'}")
     if not U.persistencia_es_duradera():
         U.log("[persistencia] ADVERTENCIA: el filesystem local de Render es efímero; configurá Upstash para estado duradero")
-    enviar_telegram(
-        "🤖 <b>Radar femenino activo.</b>\n"
-        f"Fuentes: {html.escape(', '.join(fuentes) or 'ninguna')}\n"
-        f"Persistencia: {html.escape(U.modo_persistencia())}\n"
-        "Modo: datos deportivos y calendario; cuotas deshabilitadas."
-    )
+    enviar_telegram(mensajes.inicio(fuentes, DEPORTES_RADAR, INTERVALO_REVISION))
     while True:
         inicio = time.monotonic()
         try:

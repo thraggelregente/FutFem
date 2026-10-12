@@ -143,5 +143,34 @@ class ProveedoresTenisTests(unittest.TestCase):
         self.assertLess((final - inicio).total_seconds(), 48 * 3600)
 
 
+class PresentacionTests(unittest.TestCase):
+    def test_candidato_no_afirma_ventaja_deportiva(self):
+        import mensajes
+        texto = mensajes.alerta("Tennis", "Torneo", "A", "B", "13/10 11:30 ARG", ["Falta contexto"],
+                                "B", "Magnitud: moderada; calidad: limitada", ["wta", "WTA oficial", "espn"],
+                                "CANDIDATO TENIS — BRECHA DE RANKING")
+        self.assertIn("Mejor ranking", texto)
+        self.assertNotIn("Favorito", texto)
+        self.assertNotIn("Ventaja observada", texto)
+        self.assertIn("Fuentes: WTA · ESPN", texto)
+
+    def test_html_de_fuentes_y_evidencia_se_escapa(self):
+        import mensajes
+        texto = mensajes.alerta("Soccer", "Copa & Liga", "<A>", "B", "Hoy", ["Marcador <4", "Marcador <4"],
+                                "<A>", "Fuerte", ["<fuente>"], "ASIMETRÍA")
+        self.assertIn("&lt;A&gt;", texto)
+        self.assertIn("&lt;fuente&gt;", texto)
+        self.assertEqual(texto.count("Marcador &lt;4"), 1)
+
+    def test_inicio_enumera_alcance_sin_confundir_cobertura(self):
+        import mensajes
+        texto = mensajes.inicio(["WTA oficial (cuadros, WC e historial)", "PWHL oficial"],
+                                list(mensajes.DEPORTES), 900)
+        self.assertIn("7 deportes", texto)
+        self.assertIn("Hockey sobre hielo", texto)
+        self.assertIn("15 min", texto)
+        self.assertIn("cobertura varía", texto)
+
+
 if __name__ == "__main__":
     unittest.main()
