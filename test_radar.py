@@ -15,7 +15,6 @@ import motor_mismatches as M
 import ranking_wta as R
 import fuente_api_football as A
 import fuente_highlightly as H
-import tenis_contexto as T
 with patch("threading.Thread.start"):
     import main as B
 
@@ -104,9 +103,6 @@ class RadarTests(unittest.TestCase):
         with patch.dict(B.ESTADO, {"ultimo_barrido_utc": datetime.now(timezone.utc).isoformat()}):
             self.assertEqual(B.estado_salud(), "ok")
 
-    def test_contexto_no_disponible_no_ajusta(self):
-        self.assertEqual(M.ajustar_tenis_por_contexto(M.LOCAL, {"favorita_ventaja": 2, "disponible": False}), (0, []))
-
     def test_h2h_ajeno_no_suma(self):
         r = M.analizar_h2h_extendido([partido("a", "c"), partido("b", "c")], "a", "b")
         self.assertEqual(r["reciente"], [])
@@ -131,12 +127,6 @@ class RadarTests(unittest.TestCase):
         with patch.object(R, "_cache", U.CacheTTL(1)), patch.object(U, "cargar_json", return_value=s), \
              patch.object(R.requests, "get", side_effect=RuntimeError("red")):
             self.assertEqual(R.obtener(), s)
-
-    def test_dataset_viejo_no_produce_contexto(self):
-        antiguo = int((datetime.now(timezone.utc) - timedelta(days=100)).timestamp())
-        with patch.object(T, "_cache", U.CacheTTL(1)), patch.object(T, "_cargar_anio", return_value=[(antiguo, "Hard", "a", "b")]):
-            self.assertEqual(T._indice(), {})
-            self.assertFalse(T.ESTADO["disponible"])
 
     def test_tenis_sin_rank_no_ocupa_limite_y_cola_rota(self):
         sin_rank = [evento("Sin" + str(i), "Tennis", None) for i in range(60)]

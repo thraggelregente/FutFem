@@ -305,12 +305,6 @@ def evaluar_mismatch_tenis(nombre_local, nombre_visita, rank_local, rank_visita,
     return False, "", None, 0
 
 
-def ajustar_tenis_por_contexto(favorito_lado, ctx):
-    if not ctx or not ctx.get("disponible"):
-        return 0, []
-    return max(-2, min(2, int(ctx.get("favorita_ventaja", 0)))), list(ctx.get("detalles", []))
-
-
 def evaluar_descanso(partidos_a, id_a, partidos_b, id_b):
     def _dias_ultimo_partido(partidos):
         for p in (partidos or [])[:3]:
@@ -403,10 +397,6 @@ def evaluar_plantel(bajas_local, bajas_visita, deporte):
                 "favorito": fav, "puntos": 2 if golpeado >= umbral + 2 else 1,
                 "detalle": f"Plantel: {rival} con {golpeado} bajas confirmadas vs {sano} de {fav}",
             }
-    return None
-
-
-def sugerir_mercado(deporte, favorito, nombre_fav=None):
     return None
 
 

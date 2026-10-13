@@ -10,7 +10,7 @@ Conector opcional nuevo **BALLDONTLIE WNBA**: crear una cuenta Free en https://a
 - Combina Highlightly, API-Sports, OpenLigaDB, TheSportsDB V1, OddsPapi (solo fixtures) y ESPN, además de los nuevos datos oficiales WTA y PWHL. ESPN ya no gana por ser la primera fuente; se priorizan los proveedores con más contexto deportivo.
 - Deduplica por nombres de equipos normalizados y día UTC, manteniendo las observaciones de todas las fuentes para buscar historial alternativo.
 - No bloquea un partido porque un análisis haya quedado incompleto o todavía no tenga historial. Solo registra una clave al entregar la alerta a Telegram.
-- No consulta, calcula, almacena ni muestra cuotas, mercados, bookmakers ni probabilidades implícitas. El módulo `tracker_cuotas_smart.py` queda como stub de compatibilidad sin llamadas de red, y `sugerir_mercado()` devuelve `None`.
+- No consulta, calcula, almacena ni muestra cuotas, mercados, bookmakers ni probabilidades implícitas.
 - Evita el endpoint de ITF que había devuelto 403/404. No intenta eludir su WAF; se integran los cuadros públicos WTA cuando tienen horario verificable, con ESPN como respaldo. La cobertura ITF sigue siendo incompleta.
 
 ## Archivos
@@ -20,7 +20,7 @@ Subí todos los archivos del ZIP al mismo directorio del repositorio. `render.ya
 ```bash
 python -m pip install -r requirements.txt
 python -m py_compile *.py
-python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis
+python -m unittest discover -v
 ```
 
 Los tests son offline: no envían mensajes reales a Telegram ni consumen las cuotas de las API. Que los tests pasen no prueba que una clave o el plan del proveedor estén autorizados ni garantiza que un feed contenga partidos el día de la prueba.
@@ -83,7 +83,7 @@ Los límites, restricciones de planes y comprobaciones públicas están en [PROV
 
 ## Validación
 
-Ejecutar `python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis` (50 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud y rotación de la cola.
+Ejecutar `python -m unittest discover -v` (86 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud, rotación de la cola, fuentes públicas y el motor separado de cricket.
 
 Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas; el despliegue anterior se verificó mediante su endpoint de salud.
 

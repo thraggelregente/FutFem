@@ -133,12 +133,6 @@ services:
       # Bajas confirmadas (ESPN /injuries) solo para ligas donde el endpoint exista; formato deporte:slug.
       - key: ESPN_LESIONES_SLUGS
         value: basketball:wnba
-      # Tenis: ranking PDF oficial WTA. Contexto solo si el dataset configurado está disponible y reciente.
-      - key: TENIS_CONTEXTO_ACTIVO
-        value: "1"
-      - key: TENIS_ANIOS
-        value: "2"
-
       # TheSportsDB V1 gratuito usa key 123, con respuestas limitadas por endpoint.
       # Para fixtures fiables configurar IDs verificados como femeninos, por deporte.
       # Formato: Soccer:ID1,Soccer:ID2,Basketball:ID3
