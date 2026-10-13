@@ -59,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "sportscore-multisport-v1",
+            "revision": "cricket-context-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -75,6 +75,10 @@ class SimpleHandler(BaseHTTPRequestHandler):
             "sources": list(ESTADO["fuentes"]),
             "results_ledger": ESTADO["libro_resultados"],
         }
+        cricsheet = globals().get("fuente_cricsheet")
+        if cricsheet and "cricsheet" in payload["budgets"]:
+            payload["budgets"] = dict(payload["budgets"])
+            payload["budgets"]["cricsheet"] = dict(payload["budgets"]["cricsheet"], **cricsheet.estado())
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(503 if payload["status"] == "degraded" else 200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -125,7 +129,7 @@ ENFRIAMIENTO_SIN_DATOS_MIN = max(0, int(os.environ.get("ENFRIAMIENTO_SIN_DATOS_M
 ENFRIAMIENTO_MAX_MIN = max(ENFRIAMIENTO_SIN_DATOS_MIN, int(os.environ.get("ENFRIAMIENTO_MAX_MIN", "360")))
 MAX_BUSQUEDAS_POR_NOMBRE = max(0, int(os.environ.get("MAX_BUSQUEDAS_POR_NOMBRE", "15")))
 DEPORTES_RADAR = ["Soccer", "Basketball", "Tennis", "Ice Hockey", "Handball", "Volleyball", "Rugby",
-                  "Softball", "Lacrosse", "Field Hockey"]
+                  "Softball", "Lacrosse", "Field Hockey", "Cricket"]
 DEPORTES_SIN_CUPO_COMERCIAL = {"Softball", "Lacrosse", "Field Hockey"}
 
 
@@ -157,6 +161,9 @@ fuente_sportscore = _importar("fuente_sportscore")
 fuente_worldrugby = _importar("fuente_worldrugby")
 fuente_sportapi = _importar("fuente_sportapi")
 motor_tenis = _importar("motor_tenis")
+motor_cricket = _importar("motor_cricket")
+fuente_cricsheet = _importar("fuente_cricsheet")
+fuente_balldontlie = _importar("fuente_balldontlie")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
     _ultimo_intento = {}
@@ -189,7 +196,7 @@ def _guardar_enfriamiento(enf: dict[str, tuple[float, int]]) -> None:
 
 
 _enfriamiento: dict[str, tuple[float, int]] = _cargar_enfriamiento()
-_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl", "fivb", "cev", "bbs", "sportscore", "worldrugby", "sportapi"}
+_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl", "fivb", "cev", "bbs", "sportscore", "worldrugby", "sportapi", "balldontlie"}
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +294,10 @@ TOLERANCIA_FECHA_S = 6 * 3600
 def _firma_evento(ev: dict[str, Any]) -> str:
     local = (ev.get("local") or {}).get("nombre") or ""
     visita = (ev.get("visita") or {}).get("nombre") or ""
-    return f"{ev.get('deporte', '')}|{U.firma_partido(local, visita)}" if local and visita else ""
+    firma = f"{ev.get('deporte', '')}|{U.firma_partido(local, visita)}" if local and visita else ""
+    if firma and ev.get("deporte") == "Cricket":
+        firma += "|" + str(ev.get("formato_cricket", ""))
+    return firma
 
 
 def _inicio_evento(ev: dict[str, Any]) -> int:
@@ -305,11 +315,13 @@ def _clave_canonica_evento(ev: dict[str, Any]) -> str:
     dia_utc = datetime.fromtimestamp(inicio, timezone.utc).strftime("%Y%m%d")
     if ev.get("deporte") == "Softball":
         return f"{firma}|{dia_utc}|{ev.get('id') or inicio}"  # permite doble jornada
+    if ev.get("deporte") == "Cricket":
+        return f"{firma}|{dia_utc}|{inicio}"  # separar formatos y doble jornada
     return f"{firma}|{dia_utc}"
 
 
 def _claves_equivalentes(ev: dict[str, Any]) -> set[str]:
-    if ev.get("deporte") == "Softball":
+    if ev.get("deporte") in ("Softball", "Cricket"):
         return {_clave_canonica_evento(ev)}
     firma = _firma_evento(ev)
     inicio = _inicio_evento(ev)
@@ -412,7 +424,7 @@ _COSTO_HISTORIAL = {
 
 def _historial_equipo(ev, lado):
     if ev.get("historial_aislado"):
-        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs, "sportscore": fuente_sportscore, "worldrugby": fuente_worldrugby, "sportapi": fuente_sportapi}.get(ev.get("fuente"))
+        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs, "sportscore": fuente_sportscore, "worldrugby": fuente_worldrugby, "sportapi": fuente_sportapi, "balldontlie": fuente_balldontlie}.get(ev.get("fuente"))
         return modulo.historial_equipo(ev, lado) if modulo else []
     principal = ev.get(lado) or {}
     id_evento = principal.get("id")
@@ -454,6 +466,8 @@ def _historial_equipo(ev, lado):
                 historial = fuente_bbs.historial_equipo(candidato, lado_candidato)
             elif fuente == "sportscore" and fuente_sportscore:
                 historial = fuente_sportscore.historial_equipo(candidato, lado_candidato)
+            elif fuente == "balldontlie" and fuente_balldontlie:
+                historial = fuente_balldontlie.historial_equipo(candidato, lado_candidato)
             elif fuente == "worldrugby" and fuente_worldrugby:
                 historial = fuente_worldrugby.historial_equipo(candidato, lado_candidato)
             elif fuente == "sportapi" and fuente_sportapi:
@@ -595,6 +609,29 @@ def _procesar_evento(ev, st, ahora_ts):
         st["ya_vistos"] += 1
         return False
 
+    if deporte == "Cricket":
+        # No pasar runs/wickets por el motor de diferencias de goles/puntos.
+        if not motor_cricket or not fuente_cricsheet:
+            st["sin_datos"] += 1
+            return False
+        resultado_c = motor_cricket.evaluar(ev, fuente_cricsheet.historial(ev), ahora_ts)
+        st["analizados"] += 1
+        if resultado_c["alertar"]:
+            if fuente_sportscore and not fuente_sportscore.permite_alerta(ev):
+                U.log("[cricket] detalle del mismo partido contradice el calendario; alerta omitida")
+                return True
+            entregado = enviar_alerta(deporte, torneo, nom_loc, nom_vis,
+                str(ev.get("horario") or "A confirmar"), resultado_c["evidencia"], resultado_c["favorito"],
+                "Evaluación experimental; historial parcial y señales relacionadas",
+                fuentes=list(ev.get("_fuentes_detectadas") or [ev.get("fuente")]) + resultado_c["fuentes"],
+                tipo="CANDIDATO CRICKET — EXPERIMENTAL")
+            st["alertas"] += 1
+            if entregado:
+                registro.marcar(clave)
+        else:
+            U.log(f"[cricket] {nom_loc} vs {nom_vis}: {resultado_c['motivo']}")
+        return True
+
     if deporte == "Tennis":
         local, visita = ev.get("local") or {}, ev.get("visita") or {}
         if not motor_tenis:
@@ -652,6 +689,9 @@ def _procesar_evento(ev, st, ahora_ts):
         None if ev.get("historial_aislado") or deporte in DEPORTES_SIN_CUPO_COMERCIAL else fuente_oddspapi,
         id_vis, libro_resultados=None if ev.get("historial_aislado") or deporte in DEPORTES_SIN_CUPO_COMERCIAL else libro_resultados
     )
+    if ev.get("fuente") == "sportscore" and fuente_sportscore:
+        # El motor deduplica los encuentros presentes también en la forma.
+        h2h_raw = list(h2h_raw or []) + fuente_sportscore.h2h_partido(ev)
     h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
     calendario_util = bool(forma_loc and forma_vis and all(p.get("_calendario_completo") for p in forma_loc + forma_vis))
     datos_extra = {
@@ -686,17 +726,28 @@ def _procesar_evento(ev, st, ahora_ts):
 
     if resultado["hay_mismatch"]:
         favorito = resultado["favorito"]
+        contexto, fuentes_alerta = [], list(ev.get("_fuentes_detectadas") or [ev.get("fuente")])
+        obs_ss = next((o for o in ev.get("_observaciones") or [ev] if o.get("fuente") == "sportscore"), None)
+        if obs_ss and fuente_sportscore:
+            if not fuente_sportscore.permite_alerta(obs_ss):
+                U.log("[sportscore] detalle del mismo partido contradice el calendario; alerta omitida")
+                return True
+            contexto = fuente_sportscore.contexto_alerta(obs_ss)
+            if ev.get("fuente") == "sportscore":
+                contexto += fuente_sportscore.contexto_estadistico(ev, (forma_loc, forma_vis))
+            if contexto and "sportscore" not in fuentes_alerta:
+                fuentes_alerta.append("sportscore")
         entregado = enviar_alerta(
             deporte,
             torneo,
             nom_loc,
             nom_vis,
             str(ev.get("horario") or "A confirmar"),
-            resultado.get("alertas") or [],
+            list(resultado.get("alertas") or []) + contexto,
             favorito,
             f"Magnitud: {resultado.get('magnitud', 'Moderada')}; calidad: {resultado.get('calidad_datos', 'Limitada')}; "
             f"{resultado.get('grupos_independientes', 1)} familia(s) de señales, sin independencia garantizada",
-            fuentes=ev.get("_fuentes_detectadas"),
+            fuentes=fuentes_alerta,
             tipo="ASIMETRÍA EXPERIMENTAL" if deporte in DEPORTES_SIN_CUPO_COMERCIAL else "MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA",
         )
         st["alertas"] += 1
@@ -712,6 +763,7 @@ def _procesar_evento(ev, st, ahora_ts):
 # Agregación multi-fuente
 # ---------------------------------------------------------------------------
 _PRIORIDAD_FUENTE = {
+    "balldontlie": 3,
     "sportapi": 4,
     "worldrugby": -2,
     "sportscore": 7,
@@ -750,6 +802,8 @@ def _coincide_con_candidato(candidato, firma, inicio, observacion=None):
         return False
     if candidato.get("deporte") == "Softball" and observacion:
         return candidato.get("id") == observacion.get("id")  # dobles jornadas son partidos distintos
+    if candidato.get("deporte") == "Cricket":
+        return inicio_c == inicio
     mismo_dia = _clave_canonica_evento(candidato).rsplit("|", 1)[-1] == datetime.fromtimestamp(
         inicio, timezone.utc).strftime("%Y%m%d")
     return mismo_dia or abs(inicio_c - inicio) <= TOLERANCIA_FECHA_S
@@ -760,6 +814,7 @@ def _recolectar_eventos(resumen):
         (fuente_cev, "cev"),
         (fuente_fivb, "fivb"),
         (fuente_bbs, "bbs"),
+        (fuente_balldontlie, "balldontlie"),
         (fuente_sportscore, "sportscore"),
         (fuente_worldrugby, "worldrugby"),
         (fuente_sportapi, "sportapi"),
@@ -789,6 +844,8 @@ def _recolectar_eventos(resumen):
             continue
 
         for deporte in DEPORTES_RADAR:
+            if deporte == "Cricket" and nombre != "sportscore":
+                continue  # calendario nuevo sin consumir cuotas comerciales
             if deporte in DEPORTES_SIN_CUPO_COMERCIAL and nombre != "espn":
                 continue  # los nuevos deportes nunca consultan planes comerciales
             try:
@@ -997,7 +1054,7 @@ def ejecutar_barrido_radar():
     ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
     ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())
     U.guardar_caches((fuente_api_football, fuente_highlightly, fuente_thesportsdb, fuente_theoddsapi,
-                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi))
+                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie))
     ESTADO["presupuestos"] = _resumen_presupuestos()
     ESTADO["http_last_sweep"] = {fuente: dict(codigos) for fuente, codigos in U.ESTADISTICAS.items()}
     ESTADO["barridos"] += 1
@@ -1025,19 +1082,22 @@ def _resumen_presupuestos():
     if fuente_pwhl and fuente_pwhl.disponible():
         p = fuente_pwhl.presupuesto
         salida["pwhl"] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes()}
-    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi):
+    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie):
         if modulo and modulo.disponible():
             p = modulo.presupuesto
             salida[modulo.FUENTE] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes(),
                                      "ventana": "24h móvil" if getattr(p, "ventana_horas", None) == 24 else "día UTC",
                                      "saldo_ultimo_proveedor": getattr(p, "saldo_proveedor", None)}
+            if modulo is fuente_cricsheet:
+                salida[modulo.FUENTE].update(modulo.estado())
     return salida
 
 
 def _fuentes_activas():
     fuentes = []
     for modulo, nombre in ((fuente_fivb, "FIVB/VIS"), (fuente_cev, "CEV"), (fuente_bbs, "Big Balls Sports Data (WNBA)"),
-                           (fuente_sportscore, "SportScore"), (fuente_worldrugby, "World Rugby (femenino XV)"), (fuente_sportapi, "SportAPI.ai")):
+                           (fuente_sportscore, "SportScore"), (fuente_worldrugby, "World Rugby (femenino XV)"), (fuente_sportapi, "SportAPI.ai"),
+                           (fuente_cricsheet, "Cricsheet (resultados femeninos)"), (fuente_balldontlie, "BALLDONTLIE (WNBA)")):
         if modulo and modulo.disponible():
             fuentes.append(nombre)
     if fuente_wta and fuente_wta.disponible():

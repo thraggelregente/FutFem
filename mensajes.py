@@ -4,8 +4,9 @@ import html
 DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Tennis": ("🎾", "Tenis"), "Ice Hockey": ("🏒", "Hockey sobre hielo"),
             "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby"),
-            "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped")}
+            "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped"), "Cricket": ("🏏", "Cricket")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
+           "cricsheet": "Cricsheet", "balldontlie": "BALLDONTLIE",
            "sportapi": "SportAPI.ai",
            "worldrugby": "World Rugby",
            "sportscore": "SportScore",
@@ -37,6 +38,8 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
     etiqueta = "Mejor ranking" if candidato and "RANKING" in tipo.upper() else "Lado a evaluar" if candidato else "Ventaja observada"
     detalles = list(dict.fromkeys(str(d) for d in evidencias or []))[:10]
     credito = '\n<a href="https://sportscore.com/">Powered by SportScore</a>' if any("sportscore" in str(f).lower() for f in fuentes or []) else ""
+    if any("cricsheet" in str(f).lower() for f in fuentes or []):
+        credito += '\nHistorial resumido de <a href="https://cricsheet.org/">Cricsheet</a> · <a href="https://opendatacommons.org/licenses/by/1.0/">ODC-By</a>'
     return (
         f"{emoji} <b>{titulo} · {esc(nombre)} femenino</b>\n\n"
         f"<b>{esc(local)} vs {esc(visita)}</b>\n"

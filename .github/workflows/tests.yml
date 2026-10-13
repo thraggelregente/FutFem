@@ -12,5 +12,5 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python -m unittest -v test_radar test_proveedores_tenis test_fuentes_gratis
+      - run: python -m unittest discover -v
       - run: python -m compileall -q .
