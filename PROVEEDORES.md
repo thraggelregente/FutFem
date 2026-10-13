@@ -12,7 +12,7 @@ Fuentes primarias: https://sportscore.com/developers/ ; https://sportscore.com/d
 
 En cricket de clubes, el calendario SportScore no declara temporada. Se conserva el calendario, pero **no genera alertas de clubes** hasta disponer de temporada explícita verificada, además de la misma competición y formato. Cricsheet conserva la temporada por resultado. Selecciones mayores no dependen de una temporada de liga; se evalúan por formato y fechas recientes.
 
-Validación: 88 pruebas offline y CI Python 3.11 con descubrimiento de todos los módulos. Muestras del 13/10/2026, no promesas de cobertura permanente.
+Validación actual tras la limpieza: 86 pruebas offline y CI Python 3.11 con descubrimiento de todos los módulos. Se retiraron dos pruebas exclusivas del contexto de tenis sustituido, junto con ese módulo. Muestras del 13/10/2026, no promesas de cobertura permanente.
 
 Revisión del 12/10/2026. Los límites del bot son defensivos; no equivalen al plan contratado ni a requests realmente consumidos. Las cabeceras y paneles de cada cuenta son la referencia del saldo real. No se consultan cuotas deportivas.
 

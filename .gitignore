@@ -1,3 +1,19 @@
 
 __pycache__/
 *.pyc
+
+# Credenciales locales y estado generado por el bot.
+.env
+.env.*
+!.env.example
+.venv/
+cache_*.json
+presupuesto_*.json
+alertas_enviadas.json
+enfriamiento_sin_datos.json
+ultimo_intento_v2.json
+libro_resultados.json
+ranking_wta_oficial_v1.json
+oddspapi_ventana.json
+oddspapi_historial.json
+theoddsapi_scores.json
