@@ -27,6 +27,8 @@ services:
       # API-Sports: clave opcional; límite diario por API deportiva.
       - key: API_FOOTBALL_KEY
         sync: false
+      - key: API_SPORTS_ACTIVO
+        value: "0"
       - key: API_SPORTS_DEPORTES
         value: Soccer,Basketball,Volleyball,Ice Hockey,Handball,Rugby
       - key: API_SPORTS_MAX_LIGAS

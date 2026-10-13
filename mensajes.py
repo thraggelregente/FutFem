@@ -6,6 +6,7 @@ DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby"),
             "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
+           "sportscore": "SportScore",
            "fivb": "FIVB/VIS", "cev": "CEV", "bbs": "Big Balls Sports Data", "Big Balls Sports Data": "Big Balls Sports Data",
            "pwhl": "PWHL", "espn": "ESPN", "highlightly": "Highlightly", "api_sports": "API-Sports",
            "openligadb": "OpenLigaDB", "thesportsdb": "TheSportsDB", "oddspapi": "OddsPapi",
@@ -33,6 +34,7 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
         titulo = "Asimetría · evaluación experimental"
     etiqueta = "Mejor ranking" if candidato and "RANKING" in tipo.upper() else "Lado a evaluar" if candidato else "Ventaja observada"
     detalles = list(dict.fromkeys(str(d) for d in evidencias or []))[:10]
+    credito = '\n<a href="https://sportscore.com/">Powered by SportScore</a>' if any("sportscore" in str(f).lower() for f in fuentes or []) else ""
     return (
         f"{emoji} <b>{titulo} · {esc(nombre)} femenino</b>\n\n"
         f"<b>{esc(local)} vs {esc(visita)}</b>\n"
@@ -41,7 +43,7 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
         f"<b>{etiqueta}:</b> {esc(nombre_destacado)}\n"
         f"{esc(evaluacion)}\n\n"
         "<b>Qué encontramos</b>\n" + "\n".join("• " + esc(d) for d in detalles) +
-        f"\n\n<i>Fuentes: {esc(fuentes_legibles(fuentes))}</i>"
+        f"\n\n<i>Fuentes: {esc(fuentes_legibles(fuentes))}</i>{credito}"
     )
 
 
