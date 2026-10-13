@@ -201,6 +201,43 @@ class FuentesGratisTests(unittest.TestCase):
             self.assertIsNone(S.normalizar(dict(raw, **cambios), now))
         self.assertIsNone(S.normalizar(None))
 
+    def test_sportscore_tenis_real_individual_sin_inventar_wc(self):
+        raw = {"home": "Jugadora Uno", "away": "Jugadora Dos", "competition": "WTA Women Singles",
+               "status": "upcoming", "status_text": "Not started", "time": U.ts_a_iso_utc(time.time()+3600),
+               "url": "/tennis/match/jugadora-uno-vs-jugadora-dos/"}
+        p = S.normalizar(raw, deporte="Tennis")
+        self.assertEqual(p["deporte"], "Tennis")
+        self.assertNotIn("entry", p["local"])
+        self.assertNotIn("ranking", p["local"])
+        for cambio in ({"competition": "SRL Women Singles"}, {"home": "Jugadora Uno (Srl)"},
+                       {"competition": "WTA Women Doubles"}, {"home": "R16P1"},
+                       {"status_text": "Canceled"}, {"home_score": "1"}, {"status": "live"}):
+            self.assertIsNone(S.normalizar(dict(raw, **cambio), deporte="Tennis"))
+        self.assertIsNone(S.normalizar(dict(raw, status="finished", home_score="2", away_score="0"), deporte="Tennis"))
+
+    def test_sportscore_basket_no_mezcla_soccer_ni_3x3(self):
+        raw = {"home": "Equipo A Women", "away": "Equipo B Women", "competition": "League Women",
+               "time": U.ts_a_iso_utc(time.time()-3600), "status": "finished", "home_score": "90", "away_score": "50"}
+        p = S.normalizar(raw, deporte="Basketball")
+        f = S.normalizar(raw, deporte="Soccer")
+        self.assertNotEqual(p["id_local"], f["id_local"])
+        self.assertNotEqual(p["contexto_competicion"], f["contexto_competicion"])
+        self.assertIsNone(S.normalizar(dict(raw, competition="FIBA 3x3 Women"), deporte="Basketball"))
+        self.assertIsNone(S.normalizar(dict(raw, away_score="90"), deporte="Basketball"))
+
+    def test_sportscore_colision_rival_misma_hora_no_duplica(self):
+        ev = {"id": "uno", "contexto_competicion": "wnbl", "startTimestamp": 1,
+              "local": {"id": "uc"}, "visita": {"id": "bendigo"}}
+        otro = dict(ev, id="dos", local={"id": "canberra"})
+        self.assertEqual(S.sin_colisiones([ev, ev]), [ev])
+        self.assertEqual(S.sin_colisiones([ev, otro]), [])
+        self.assertEqual(len(S.sin_colisiones([ev, dict(otro, startTimestamp=2)])), 2)
+
+    def test_sportscore_historial_tenis_no_se_convierte_en_perfil_wta(self):
+        with patch.object(S.cliente, "pedir") as red:
+            self.assertEqual(S.historial_equipo({"deporte": "Tennis"}, "local"), [])
+            red.assert_not_called()
+
     def test_sportscore_identidad_ambigua_no_elige_equipo(self):
         with patch.object(S._cache, "get", return_value=(False, None)), patch.object(S._cache, "set"), \
              patch.object(S.cliente, "pedir", return_value={"teams": [

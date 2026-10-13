@@ -59,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "sportapi-women-v1",
+            "revision": "sportscore-multisport-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
