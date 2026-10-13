@@ -34,6 +34,14 @@ def _get(params):
     info = {}
     data = U.get_json("https://api.bigballsdata.com/v1/matches", FUENTE, params=params,
                       headers={"Authorization": "Bearer " + API_KEY}, info=info, timeout=25, reintentar=False)
+    headers = {k.lower(): v for k, v in (info.get("headers") or {}).items()}
+    try:
+        # Solo el bucket diario: el Remaining genérico puede pertenecer al minuto.
+        diario = int(headers.get("x-ratelimit-limit-day", 250))
+        if diario in (250, 500):
+            presupuesto.limite = diario
+    except (ValueError, TypeError):
+        pass
     presupuesto.registrar()
     if info.get("status") in (401, 403):
         _pausa = time.time() + 24 * 3600

@@ -11,6 +11,9 @@ import fuente_cev as C
 import fuente_fivb as F
 import fuente_espn as E
 import fuente_bbs as BB
+import fuente_sportscore as S
+import fuente_api_football as A
+import mensajes
 import ranking_wta as R
 import main as B
 import utilidades as U
@@ -33,6 +36,63 @@ def competiciones():
 
 
 class FuentesGratisTests(unittest.TestCase):
+    def test_cuenta_suspendida_desactivada_no_hace_requests(self):
+        with patch.object(A, "ACTIVO", False), patch.object(A, "API_KEY", "fake"), patch.object(U, "get_json") as red:
+            self.assertIsNone(A._get("Soccer", "/fixtures", {}))
+            red.assert_not_called()
+
+    def test_suspension_detiene_todos_los_deportes(self):
+        with patch.object(A, "ACTIVO", True), patch.object(A, "API_KEY", "fake"), \
+             patch.object(A, "_deshabilitada", {"motivo": ""}), patch.object(A, "_deportes_sin_permiso", set()), \
+             patch.object(A, "_ritmos", {}), patch.object(U.RitmoPedidos, "esperar"), \
+             patch.object(U, "get_json", return_value={"errors": {"account": "Account suspended"}}) as red:
+            A._get("Soccer", "/fixtures", {})
+            A._get("Basketball", "/games", {})
+            self.assertEqual(red.call_count, 1)
+            self.assertFalse(A.disponible())
+
+    def test_sportscore_genero_fecha_y_marcador(self):
+        now = time.time()
+        raw = {"home": "Equipo A Women", "away": "Equipo B Women", "competition": "League Women",
+               "time": U.ts_a_iso_utc(now-3600), "status": "finished", "home_score": "3", "away_score": "1"}
+        self.assertIsNotNone(S.normalizar(raw, now))
+        for cambios in ({"home": "Equipo A", "away": "Equipo B", "competition": "Men League"},
+                        {"away": "Equipo B", "competition": "Friendly"}, {"time": "2026-10-13"},
+                        {"time": "2026-10-13T12:00:00"}, {"home_score": "?"},
+                        {"time": U.ts_a_iso_utc(now-91*86400)}, {"time": U.ts_a_iso_utc(now+3600)}):
+            self.assertIsNone(S.normalizar(dict(raw, **cambios), now))
+        self.assertIsNone(S.normalizar(None))
+
+    def test_sportscore_identidad_ambigua_no_elige_equipo(self):
+        with patch.object(S._cache, "get", return_value=(False, None)), patch.object(S._cache, "set"), \
+             patch.object(S.cliente, "pedir", return_value={"teams": [
+                 {"name": "Equipo Women", "slug": "uno"}, {"name": "Equipo Women", "slug": "dos"}]}):
+            self.assertIsNone(S._resolver("Equipo Women"))
+
+    def test_sportscore_historial_no_mezcla_competiciones(self):
+        raw = {"home": "Equipo A Women", "away": "Equipo B Women", "competition": "League Women",
+               "time": U.ts_a_iso_utc(time.time()-3600), "status": "finished", "home_score": "3", "away_score": "1"}
+        p = S.normalizar(raw)
+        with patch.object(S, "_resolver", return_value="equipo-a-women"), patch.object(S.cliente, "pedir", return_value={
+            "team": {"name": raw["home"]}, "matches": [raw, dict(raw, competition="Cup Women")]}):
+            self.assertEqual(len(S.historial_equipo(p, "local")), 1)
+
+    def test_sportscore_atribucion_en_alerta(self):
+        texto = mensajes.alerta("Soccer", "Liga", "A", "B", "12:00", [], "A", "Evaluación", ["sportscore"], "mismatch")
+        self.assertIn('href="https://sportscore.com/"', texto)
+        self.assertIn("Powered by SportScore", texto)
+
+    def test_bbs_cabecera_diaria_no_confunde_limite_por_minuto(self):
+        def respuesta(*args, **kwargs):
+            kwargs["info"].update(status=200, headers={"X-RateLimit-Limit-Day": "500", "X-RateLimit-Limit": "100"})
+            return {"data": [], "meta": {"cache_age_ms": 10}}
+        budget = U.PresupuestoDiario("test_bbs_header", 250, reserva=0)
+        with patch.object(BB, "API_KEY", "fake"), patch.object(BB, "_pausa", 0), \
+             patch.object(BB, "presupuesto", budget), patch.object(BB._cache, "get", return_value=(False, None)), \
+             patch.object(BB._cache, "set"), patch.object(BB._ritmo, "esperar"), patch.object(U, "get_json", side_effect=respuesta):
+            BB._get({"league": "wnba"})
+            self.assertEqual(budget.limite, 500)
+
     def test_bbs_sin_clave_no_hace_requests(self):
         with patch.object(BB, "API_KEY", ""), patch.object(U, "get_json") as red:
             self.assertEqual(BB.obtener_eventos("Basketball"), [])
@@ -62,7 +122,8 @@ class FuentesGratisTests(unittest.TestCase):
              patch.object(B, "fuente_thesportsdb", None), patch.object(B, "fuente_openligadb", None), \
              patch.object(B, "fuente_espn", None), patch.object(B, "fuente_wta", None), \
              patch.object(B, "fuente_pwhl", None), patch.object(B, "fuente_bbs", None), \
-             patch.object(B, "fuente_cev", None), patch.object(B, "fuente_fivb", None):
+             patch.object(B, "fuente_cev", None), patch.object(B, "fuente_fivb", None), \
+             patch.object(B, "fuente_sportscore", None):
             B._recolectar_eventos({})
             self.assertFalse({c.args[0] for c in pedidos.call_args_list} & B.DEPORTES_SIN_CUPO_COMERCIAL)
 

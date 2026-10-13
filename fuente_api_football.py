@@ -31,6 +31,7 @@ import libro_resultados as L
 import utilidades as U
 
 API_KEY = os.environ.get("API_FOOTBALL_KEY")
+ACTIVO = os.environ.get("API_SPORTS_ACTIVO", "0").strip() == "1"
 FUENTE = "api_sports"
 HORAS_VENTANA = 24
 
@@ -110,7 +111,7 @@ def _avisar_una_vez(clave, mensaje):
 
 
 def disponible():
-    return bool(API_KEY) and not _deshabilitada["motivo"]
+    return ACTIVO and bool(API_KEY) and not _deshabilitada["motivo"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +176,10 @@ def _get(deporte, ruta, params):
     error = _errores_del_cuerpo(data)
     if error:
         bajo = error.lower()
-        if "request" in bajo and ("limit" in bajo or "reached" in bajo):
+        if "suspend" in bajo:
+            _deshabilitada["motivo"] = "Cuenta suspendida; requiere revisión del proveedor"
+            U.log("[api_sports] cuenta suspendida: se detienen todas las consultas, no se reintenta por deporte")
+        elif "request" in bajo and ("limit" in bajo or "reached" in bajo):
             presupuesto.marcar_agotado()
             _avisar_una_vez(("limite", presupuesto.fecha), f"[api_sports] lÃ­mite diario alcanzado: {error}")
         elif "plan" in bajo or "season" in bajo or "access" in bajo or "not allowed" in bajo:
