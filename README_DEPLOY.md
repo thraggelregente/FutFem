@@ -1,5 +1,9 @@
 # Radar de asimetrías deportivas femeninas — despliegue
 
+Ampliación 13/10/2026: cricket femenino T20/ODI es el 11.º deporte, con calendario SportScore e historial Cricsheet sin clave (`CRICSHEET_ACTIVO=0` permite desactivarlo). Alertas experimentales sólo con historial reciente suficiente; no usa cuotas de los demás proveedores. Archivos Cricsheet dinámicos por año, caché 24 h, hasta cuatro descargas/día. SportScore añade H2H fechados y contexto verificado de alineaciones/tiros al arco, dentro del presupuesto compartido existente. No se usan tablas/cuadros/goleadoras sin temporada o fecha verificable.
+
+Conector opcional nuevo **BALLDONTLIE WNBA**: crear una cuenta Free en https://app.balldontlie.io/ y guardar su clave en Render como `BALLDONTLIE_API_KEY`. No pegar claves en GitHub ni en mensajes. No activar prueba de pago: el conector sólo consulta games WNBA gratis. NCAAW games requiere plan pago y no está integrado. Respeta cinco requests/min; el tope operativo local 1.000/día no representa una cuota publicada por el proveedor. Sin la variable, no hace pedidos. La validación autenticada se realiza tras agregar la clave.
+
 ## Qué hace esta versión
 
 - Analiza exclusivamente competiciones con evidencia positiva de ser femeninas: nombre femenino explícito o ID de competición agregado a una lista permitida.

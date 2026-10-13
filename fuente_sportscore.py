@@ -20,14 +20,14 @@ cliente.presupuesto = PresupuestoVentana("sportscore_publica", max(1, min(10000,
 cliente.ritmo = U.RitmoPedidos(30, minimo_segundos=1)
 presupuesto = cliente.presupuesto
 BASE = "https://sportscore.com"
-DEPORTES = {"Soccer": "football", "Basketball": "basketball", "Tennis": "tennis"}
+DEPORTES = {"Soccer": "football", "Basketball": "basketball", "Tennis": "tennis", "Cricket": "cricket"}
 
 
 def disponible():
     return ACTIVO
 
 
-def normalizar(raw, ahora=None, deporte="Soccer"):
+def normalizar(raw, ahora=None, deporte="Soccer", max_dias=90):
     if deporte not in DEPORTES:
         return None
     if not isinstance(raw, dict) or not isinstance(raw.get("competition", ""), str):
@@ -78,6 +78,15 @@ def normalizar(raw, ahora=None, deporte="Soccer"):
     comunes = {"fuente": FUENTE, "deporte": deporte, "torneo": liga, "historial_aislado": True,
                "contexto_competicion": contexto, "femenino_seguro": True, "local": local, "visita": visita,
                "startTimestamp": int(ts)}
+    if deporte == "Cricket":
+        formato = "T20" if re.search(r"\bT20I?\b", liga, re.I) else "ODI" if re.search(r"\bODI\b", liga, re.I) else None
+        if not formato or edades or any(re.search(r"\bA(?: Women)?$", n) for n in (a, b)):
+            return None
+        internacional = bool(re.search(r"\b(?:ODI|International|World Cup)\b|Series .* vs ", liga, re.I))
+        clubes = bool(re.search(r"Spring Challenge|National T20|Big Bash|Super Smash|Premier League", liga, re.I))
+        if not internacional and not clubes:
+            return None
+        comunes.update(formato_cricket=formato, tipo_equipo_cricket="international" if internacional else "club")
     if raw.get("status") == "upcoming" and ahora < ts <= ahora + 86400:
         if any(raw.get(campo) not in (None, "", "0", 0) for campo in ("home_score", "away_score")):
             return None  # marcador ya iniciado pese a status upcoming
@@ -89,15 +98,15 @@ def normalizar(raw, ahora=None, deporte="Soccer"):
         partes = url.strip("/").split("/")
         ident = partes[-1] if len(partes) == 4 else hashlib.sha256(
             (deporte + "|" + contexto + "|" + U.firma_partido(a, b) + "|" + str(int(ts))).encode()).hexdigest()[:24]
-        return dict(comunes, id="ss_" + ident,
+        return dict(comunes, id="ss_" + ident, sportscore_url=url,
                     tipo_estado="pre", horario=U.formatear_hora_arg(ts))
-    if deporte == "Tennis":
+    if deporte in ("Tennis", "Cricket"):
         return None  # perfiles/resultados del motor siguen verificados por WTA; no inferir WC ni carrera
     scores = enteros(raw.get("home_score"), raw.get("away_score"))
-    if (raw.get("status") != "finished" or not scores or min(scores) < 0 or not ahora - 90 * 86400 <= ts < ahora
+    if (raw.get("status") != "finished" or not scores or min(scores) < 0 or not ahora - max_dias * 86400 <= ts < ahora
             or deporte == "Basketball" and (scores[0] == scores[1] or max(scores) == 0)):
         return None
-    return dict(comunes, fecha=U.ts_a_iso_utc(ts), id_local=local["id"], id_visita=visita["id"],
+    return dict(comunes, sportscore_url=raw.get("url", ""), fecha=U.ts_a_iso_utc(ts), id_local=local["id"], id_visita=visita["id"],
                 nom_local=a, nom_visita=b, puntos_local=scores[0], puntos_visita=scores[1])
 
 
@@ -180,3 +189,93 @@ def historial_equipo(evento, lado):
     filas = [p for p in (normalizar(r, deporte=deporte) for r in data.get("matches", [])) if p and "fecha" in p]
     return sorted((p for p in filas if p.get("contexto_competicion") == evento.get("contexto_competicion") and
                    equipo.get("id") in (p["id_local"], p["id_visita"])), key=lambda p: p["fecha"], reverse=True)[:10]
+
+
+def h2h_partido(evento):
+    """Meetings fechados; el resumen agregado no tiene ventana de vigencia."""
+    deporte = evento.get("deporte")
+    if deporte not in ("Soccer", "Basketball"):
+        return []
+    slugs = [_resolver((evento[l].get("busqueda_nombre") or evento[l]["nombre"]), deporte) for l in ("local", "visita")]
+    if not all(slugs) or slugs[0] == slugs[1]:
+        return []
+    dato = cliente.pedir(BASE + "/api/v1/h2h/", {"sport": DEPORTES[deporte], "team1": slugs[0], "team2": slugs[1], "limit": 50})
+    if not isinstance(dato, dict) or not isinstance(dato.get("matches"), list):
+        return []
+    ids = {evento[l]["id"] for l in ("local", "visita")}
+    return [p for r in dato.get("matches", []) if isinstance(r, dict)
+            for p in [normalizar(r, deporte=deporte, max_dias=365)] if p and "fecha" in p
+            and {p["id_local"], p["id_visita"]} == ids
+            and p["contexto_competicion"] == evento.get("contexto_competicion")]
+
+
+def detalle_verificado(evento):
+    """El slug puede apuntar al último cruce: exigir misma pareja, liga y horario."""
+    deporte, url = evento.get("deporte"), str(evento.get("sportscore_url", ""))
+    if deporte not in DEPORTES or not re.fullmatch(r"/" + DEPORTES[deporte] + r"/match/[-a-z0-9]+(?:/[-a-z0-9]+)?/?", url):
+        return None
+    slug = url.strip("/").split("/")[2]
+    dato = cliente.pedir(BASE + "/api/widget/match/", {"sport": DEPORTES[deporte], "slug": slug}, ttl=900)
+    if not isinstance(dato, dict) or dato.get("sport") != DEPORTES[deporte]:
+        return None
+    raw = (dato or {}).get("match") if isinstance(dato, dict) else None
+    if not isinstance(raw, dict) or U.normalizar(raw.get("competition", "")) != U.normalizar(evento.get("torneo", "")):
+        return None
+    fecha = U._parsear_iso(str(raw.get("time", "")))
+    if not fecha or fecha.tzinfo is None or int(fecha.timestamp()) != evento.get("startTimestamp"):
+        return None
+    if any(U.firma_equipo(raw.get(campo, "")) != U.firma_equipo(evento[lado].get("busqueda_nombre") or evento[lado]["nombre"])
+           for campo, lado in (("home", "local"), ("away", "visita"))):
+        return None
+    return raw
+
+
+def contexto_alerta(evento):
+    """Sólo información confirmada del partido actual, sin puntaje adicional."""
+    raw = detalle_verificado(evento)
+    if not raw or raw.get("status") != "upcoming":
+        return []
+    alineacion = raw.get("lineups")
+    if evento.get("deporte") == "Soccer" and isinstance(alineacion, dict) and alineacion.get("confirmed") is True:
+        equipos = [alineacion.get(k) for k in ("home_xi", "away_xi")]
+        if all(isinstance(x, list) and len(x) == 11 and all(isinstance(j, dict) and j.get("name") for j in x) for x in equipos):
+            return ["SportScore: alineaciones confirmadas (11 titulares por equipo); no se infieren bajas por ausencia."]
+    return []
+
+
+def permite_alerta(evento):
+    raw = detalle_verificado(evento)
+    if raw is None:
+        return True  # falta de detalle no desautoriza calendario verificado
+    return bool(normalizar(raw, deporte=evento["deporte"]) and raw.get("status") == "upcoming")
+
+
+def contexto_estadistico(evento, historiales):
+    """Hasta cuatro detalles recientes; tiros al arco como contexto, no otra familia."""
+    if evento.get("deporte") != "Soccer":
+        return []
+    promedios = []
+    for lado, filas in zip(("local", "visita"), historiales):
+        equipo = evento[lado]
+        valores = []
+        for p in filas[:2]:
+            if equipo["id"] not in (p.get("id_local"), p.get("id_visita")):
+                continue
+            raw = detalle_verificado(p)
+            if not raw or raw.get("status") != "finished":
+                continue
+            estadisticas = raw.get("stats")
+            if not isinstance(estadisticas, list):
+                continue
+            stats = [s for s in estadisticas if isinstance(s, dict) and s.get("label") == "Shots on Target"]
+            if len(stats) != 1:
+                continue
+            campo = "home" if equipo["id"] == p["id_local"] else "away"
+            valor = stats[0].get(campo)
+            if not isinstance(valor, bool) and isinstance(valor, (int, float)) and 0 <= valor <= 30:
+                valores.append(valor)
+        if len(valores) != 2:
+            return []
+        promedios.append(sum(valores)/2)
+    return [f"Contexto SportScore: tiros al arco por partido {promedios[0]:.1f} / {promedios[1]:.1f} "
+            "(local/visitante, dos partidos recientes cada una); no suma puntaje independiente."]

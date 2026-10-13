@@ -166,7 +166,7 @@ class PresentacionTests(unittest.TestCase):
         import mensajes
         texto = mensajes.inicio(["WTA oficial (cuadros, WC e historial)", "PWHL oficial"],
                                 list(mensajes.DEPORTES), 900)
-        self.assertIn("10 deportes", texto)
+        self.assertIn("11 deportes", texto)
         self.assertIn("Hockey sobre hielo", texto)
         self.assertIn("15 min", texto)
         self.assertIn("cobertura varía", texto)
