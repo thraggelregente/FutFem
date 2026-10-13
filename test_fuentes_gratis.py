@@ -2,7 +2,7 @@
 import test_radar  # fija DATA_DIR y deshabilita Telegram/Redis reales
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -12,12 +12,14 @@ import fuente_fivb as F
 import fuente_espn as E
 import fuente_bbs as BB
 import fuente_sportscore as S
+import fuente_worldrugby as WR
+import fuente_openligadb as OL
 import fuente_api_football as A
 import mensajes
 import ranking_wta as R
 import main as B
 import utilidades as U
-from fuentes_publicas import xml_seguro
+from fuentes_publicas import xml_seguro, PresupuestoVentana
 
 
 def cev_fila():
@@ -35,7 +37,83 @@ def competiciones():
                   "DateFrom": f"{year}-01-01", "DateTo": f"{year + 1}-12-31"}}
 
 
+def wr_fila():
+    f = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    f -= timedelta(days=1)
+    return {"sport": "WRU", "matchId": "match", "status": "C", "outcome": "A", "scores": [20, 10],
+            "time": {"millis": f.timestamp()*1000, "gmtOffset": 0, "label": f.date().isoformat()},
+            "teams": [{"id": "a", "name": "Canada"}, {"id": "b", "name": "England"}],
+            "events": [{"id": "evt", "label": "WXV", "sport": "wru",
+                        "start": {"label": f"{f.year}-01-01"}, "end": {"label": f"{f.year}-12-31"}}]}
+
+
 class FuentesGratisTests(unittest.TestCase):
+    def test_ventana_24h_no_se_reinicia_a_medianoche_y_persiste(self):
+        base = datetime.now(timezone.utc).replace(hour=23, minute=55, second=0, microsecond=0).timestamp()
+        with patch("fuentes_publicas.time.time", return_value=base):
+            p = PresupuestoVentana("test_rolling", 5)
+            p.registrar(4)
+        with patch("fuentes_publicas.time.time", return_value=base+600):
+            q = PresupuestoVentana("test_rolling", 5)
+            self.assertEqual(q.usadas, 4)
+            self.assertFalse(q.puede_gastar(2))
+        with patch("fuentes_publicas.time.time", return_value=base+86401):
+            self.assertEqual(q.usadas, 0)
+
+    def test_sportscore_cache_conserva_historial_con_muchas_identidades(self):
+        cache = U.CachePersistente("test_cache_sportscore", 21600, max_items=S._cache.max_items)
+        cache.set("historial", {"matches": [1, 2]})
+        for i in range(200):
+            cache.set(("identidad", i), str(i), ttl=7*86400)
+        self.assertEqual(cache.get("historial"), (True, {"matches": [1, 2]}))
+
+    def test_openliga_contrato_actual_y_cache_anterior(self):
+        raw = {"matchID": 1, "leagueShortcut": "ffb1", "leagueSeason": 2026,
+               "leagueName": "Frauen Bundesliga", "matchIsFinished": True,
+               "matchDateTimeUTC": U.ts_a_iso_utc(time.time()-3600),
+               "team1": {"teamId": 11, "teamName": "A Women"},
+               "team2": {"teamId": 22, "teamName": "B Women"},
+               "matchResults": [{"resultOrderID": 2, "pointsTeam1": 4, "pointsTeam2": 1}]}
+        p = OL._validar_contrato([raw], "ffb1", "2026")[0]
+        self.assertEqual(OL._resultado_final(p), (4, 1))
+        self.assertEqual(OL._equipo(p, "Team1")["id"], "11")
+        self.assertEqual(OL._validar_contrato([p], "ffb1", "2026"), [p])
+        self.assertEqual(OL._validar_contrato([raw], "ffb1", "2027"), [])
+        self.assertEqual(OL._validar_contrato([dict(raw, leagueName="Bundesliga Men")], "ffb1", "2026"), [])
+        with patch.object(OL._cache, "get", return_value=(True, [raw])), patch.object(U, "get_json") as red:
+            self.assertEqual(OL._partidos_liga("ffb1", "2026"), [p])
+            red.assert_not_called()
+
+    def test_worldrugby_filtra_genero_modalidad_fecha_y_resultado(self):
+        raw = wr_fila()
+        self.assertIsNotNone(WR.normalizar(raw))
+        for cambio in ({"sport": "MRU"}, {"sport": "WRS"}, {"sport": None},
+                       {"status": "CC"}, {"status": "L"}, {"outcome": "B"},
+                       {"scores": [0, 0]}, {"scores": [20, None]},
+                       {"time": dict(raw["time"], label="2025-01-01")},
+                       {"events": [dict(raw["events"][0], sport="wrs")]},
+                       {"events": [dict(raw["events"][0], label="Women U20")]}):
+            self.assertIsNone(WR.normalizar(dict(raw, **cambio)))
+
+    def test_worldrugby_no_alerta_partido_aplazado(self):
+        raw = wr_fila()
+        ts = raw["time"]["millis"] / 1000
+        self.assertIsNotNone(WR.normalizar(dict(raw, status="U"), ahora=ts-3600))
+        self.assertIsNone(WR.normalizar(dict(raw, status="UP"), ahora=ts-3600))
+
+    def test_worldrugby_historial_aisla_competicion(self):
+        p = WR.normalizar(wr_fila())
+        with patch.object(WR, "_historial", [p, dict(p, contexto_competicion="otro torneo")]):
+            self.assertEqual(WR.historial_equipo(p, "local"), [p])
+
+    def test_worldrugby_paginacion_repetida_no_duplica(self):
+        raw = wr_fila()
+        with patch.object(WR.cliente, "pedir", return_value={"content": [raw], "pageInfo": {"page": 0, "numPages": 2}}) as red, \
+             patch.object(WR, "_historial", []):
+            self.assertEqual(WR.obtener_eventos("Rugby"), [])
+            self.assertEqual(len(WR._historial), 1)
+            self.assertEqual(red.call_count, 2)
+
     def test_cuenta_suspendida_desactivada_no_hace_requests(self):
         with patch.object(A, "ACTIVO", False), patch.object(A, "API_KEY", "fake"), patch.object(U, "get_json") as red:
             self.assertIsNone(A._get("Soccer", "/fixtures", {}))
@@ -123,7 +201,7 @@ class FuentesGratisTests(unittest.TestCase):
              patch.object(B, "fuente_espn", None), patch.object(B, "fuente_wta", None), \
              patch.object(B, "fuente_pwhl", None), patch.object(B, "fuente_bbs", None), \
              patch.object(B, "fuente_cev", None), patch.object(B, "fuente_fivb", None), \
-             patch.object(B, "fuente_sportscore", None):
+             patch.object(B, "fuente_sportscore", None), patch.object(B, "fuente_worldrugby", None):
             B._recolectar_eventos({})
             self.assertFalse({c.args[0] for c in pedidos.call_args_list} & B.DEPORTES_SIN_CUPO_COMERCIAL)
 

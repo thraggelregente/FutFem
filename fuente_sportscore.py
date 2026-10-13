@@ -9,12 +9,14 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import utilidades as U
-from fuentes_publicas import Cliente, enteros
+from fuentes_publicas import Cliente, PresupuestoVentana, enteros
 
 FUENTE = "sportscore"
 ACTIVO = os.environ.get("SPORTSCORE_ACTIVO", "1") != "0"
-_cache = U.CachePersistente("sportscore_v1", 6 * 3600, max_items=96)
+_cache = U.CachePersistente("sportscore_v1", 6 * 3600, max_items=4096)
 cliente = Cliente(FUENTE, _cache, limite=1000)
+cliente.presupuesto = PresupuestoVentana("sportscore_publica", max(1, min(10000, int(os.environ.get("SPORTSCORE_LIMIT_24H", "9800")))))
+cliente.ritmo = U.RitmoPedidos(30, minimo_segundos=1)
 presupuesto = cliente.presupuesto
 BASE = "https://sportscore.com"
 
@@ -97,10 +99,13 @@ def _resolver(nombre):
     hit, slug = _cache.get(clave)
     if hit:
         return slug
-    data = cliente.pedir(BASE + "/api/v1/search/", {"sport": "football", "q": nombre, "limit": 20}, ttl=7 * 86400)
+    data = cliente.pedir(BASE + "/api/v1/search/", {"sport": "football", "q": nombre, "limit": 20}, ttl=6 * 3600)
     if not isinstance(data, dict):
         return None
-    rows = [r for r in data.get("teams", []) if isinstance(r, dict) and U.firma_equipo(r.get("name", "")) == U.firma_equipo(nombre)]
+    equipos = data.get("teams")
+    if not isinstance(equipos, list):
+        return None
+    rows = [r for r in equipos if isinstance(r, dict) and U.firma_equipo(r.get("name", "")) == U.firma_equipo(nombre)]
     slug = rows[0].get("slug") if len(rows) == 1 else None
     if slug and not re.fullmatch(r"[-a-z0-9]+", slug):
         slug = None

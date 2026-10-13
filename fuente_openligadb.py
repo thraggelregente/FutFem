@@ -130,15 +130,39 @@ def _partidos_liga(shortcut, season):
     clave = (shortcut, season)
     hit, valor = _cache.get(clave)
     if hit:
-        return valor
+        return _validar_contrato(valor, shortcut, season)
     url = f"{BASE}/getmatchdata/{quote(shortcut, safe='')}/{quote(season, safe='') }"
     datos = U.get_json(url, FUENTE, timeout=15)
     if not isinstance(datos, list):
         return None
-    partidos = [m for m in datos if isinstance(m, dict)]
+    partidos = _validar_contrato(datos, shortcut, season)
     _cache.set(clave, partidos)
     U.log(f"[openligadb] {shortcut}/{season}: {len(partidos)} partidos en cachÃ©")
     return partidos
+
+
+def _contrato(valor):
+    """Aceptar camelCase actual y PascalCase anterior, incluidos los objetos hijos."""
+    if isinstance(valor, dict):
+        return {k[:1].upper() + k[1:]: _contrato(v) for k, v in valor.items()}
+    if isinstance(valor, list):
+        return [_contrato(v) for v in valor]
+    return valor
+
+
+def _validar_contrato(filas, shortcut, season):
+    if not isinstance(filas, list):
+        return []
+    salida = []
+    for raw in filas:
+        if not isinstance(raw, dict):
+            continue
+        m = _contrato(raw)
+        if (str(m.get("LeagueShortcut", "")).lower() == shortcut.lower()
+                and str(m.get("LeagueSeason", "")) == str(season)
+                and U.es_femenino(str(m.get("LeagueName", "")), "", "")):
+            salida.append(m)
+    return salida
 
 
 def _normalizar(match, shortcut, season, now_ts):
