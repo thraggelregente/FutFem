@@ -6,6 +6,7 @@ DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby"),
             "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
+           "worldrugby": "World Rugby",
            "sportscore": "SportScore",
            "fivb": "FIVB/VIS", "cev": "CEV", "bbs": "Big Balls Sports Data", "Big Balls Sports Data": "Big Balls Sports Data",
            "pwhl": "PWHL", "espn": "ESPN", "highlightly": "Highlightly", "api_sports": "API-Sports",
