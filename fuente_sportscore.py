@@ -59,8 +59,12 @@ def normalizar(raw, ahora=None, deporte="Soccer"):
     if not f:
         return None
     ts = f.timestamp()
-    edades = re.findall(r"\bU[ -]?(\d{2})\b", liga, re.I)
+    edades = U.categoria_equipo(liga)[0]
+    if len(edades) > 1:
+        return None
     if edades:
+        if any(U.categoria_equipo(n)[0] and U.categoria_equipo(n)[0] != edades for n in (a, b)):
+            return None
         if U.categoria_equipo(a)[0] == ():
             a += " U" + edades[0]
         if U.categoria_equipo(b)[0] == ():

@@ -233,6 +233,14 @@ class FuentesGratisTests(unittest.TestCase):
         self.assertEqual(S.sin_colisiones([ev, otro]), [])
         self.assertEqual(len(S.sin_colisiones([ev, dict(otro, startTimestamp=2)])), 2)
 
+    def test_sportscore_under_19_no_se_mezcla_con_mayores(self):
+        raw = {"home": "País A Women", "away": "País B Women", "competition": "Women Under 19",
+               "status": "upcoming", "time": U.ts_a_iso_utc(time.time()+3600),
+               "url": "/basketball/match/pais-a-vs-pais-b/"}
+        ev = S.normalizar(raw, deporte="Basketball")
+        self.assertIn("U19", ev["local"]["nombre"])
+        self.assertIsNone(S.normalizar(dict(raw, home="País A Women U17"), deporte="Basketball"))
+
     def test_sportscore_historial_tenis_no_se_convierte_en_perfil_wta(self):
         with patch.object(S.cliente, "pedir") as red:
             self.assertEqual(S.historial_equipo({"deporte": "Tennis"}, "local"), [])
