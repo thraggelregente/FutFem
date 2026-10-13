@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -984,6 +984,8 @@
+         return
+
+     registro.podar()
++    if cobertura:
++        cobertura.podar()
+     resumen = {}
+     ahora_ts = time.time()
+     t_inicio = time.monotonic()

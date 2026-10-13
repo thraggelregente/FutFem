@@ -1,0 +1,16 @@
+--- main.py
++++ main.py
+@@ -677,9 +677,13 @@
+     if not forma_loc or not forma_vis:
+         st["sin_datos"] += 1
+         _registrar_sin_datos(clave, ev)
++        if cobertura:
++            cobertura.registrar(clave, "sin_historial", deporte, torneo)
+         U.log(f"[datos-parciales] {torneo}: {nom_loc} vs {nom_vis}; forma {len(forma_loc)}/{len(forma_vis)}; se evalúan otras señales disponibles")
+
+     st["analizados"] += 1
++    if cobertura:
++        cobertura.registrar(clave, "evaluado", deporte, torneo)
+     perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc, deporte)
+     perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis, deporte)
+     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)

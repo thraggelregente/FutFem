@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -600,6 +600,8 @@
+     st["femeninos"] += 1
+     if not U.participante_definido(nom_loc) or not U.participante_definido(nom_vis) or U.firma_equipo(nom_loc) == U.firma_equipo(nom_vis):
+         st["sin_datos"] += 1
++        if cobertura:
++            cobertura.registrar(clave, "identidad_no_fiable", deporte, torneo)
+         return False
+
+     if not _fecha_evento_valida(ev, ahora_ts, st):

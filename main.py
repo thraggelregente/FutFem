@@ -57,30 +57,36 @@ def estado_salud():
 
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        payload = {
-            "service": "radar-femenino",
-            "revision": "repo-cleanup-v1",
-            "status": estado_salud(),
-            "analysis_last_sweep": ESTADO["analizados"],
-            "budgets": ESTADO["presupuestos"],
-            "http_last_sweep": ESTADO.get("http_last_sweep", {}),
-            "persistence": U.modo_persistencia(),
-            "sports_scope": "women_only",
-            "market_data": False,
-            "uptime_seconds": int(time.time() - ESTADO["inicio"]),
-            "sweeps": ESTADO["barridos"],
-            "last_sweep_utc": ESTADO["ultimo_barrido_utc"],
-            "last_sweep_seconds": ESTADO["ultimo_barrido_segundos"],
-            "unique_events_last_sweep": ESTADO["eventos_unicos"],
-            "sources": list(ESTADO["fuentes"]),
-            "results_ledger": ESTADO["libro_resultados"],
-        }
-        cricsheet = globals().get("fuente_cricsheet")
-        if cricsheet and "cricsheet" in payload["budgets"]:
-            payload["budgets"] = dict(payload["budgets"])
-            payload["budgets"]["cricsheet"] = dict(payload["budgets"]["cricsheet"], **cricsheet.estado())
+        if self.path.startswith("/cobertura") and globals().get("cobertura"):
+            payload = cobertura.reporte()
+            status_code = 200
+        else:
+            payload = {
+                "service": "radar-femenino",
+                "revision": "repo-cleanup-v1",
+                "status": estado_salud(),
+                "analysis_last_sweep": ESTADO["analizados"],
+                "budgets": ESTADO["presupuestos"],
+                "http_last_sweep": ESTADO.get("http_last_sweep", {}),
+                "persistence": U.modo_persistencia(),
+                "sports_scope": "women_only",
+                "market_data": False,
+                "uptime_seconds": int(time.time() - ESTADO["inicio"]),
+                "sweeps": ESTADO["barridos"],
+                "last_sweep_utc": ESTADO["ultimo_barrido_utc"],
+                "last_sweep_seconds": ESTADO["ultimo_barrido_segundos"],
+                "unique_events_last_sweep": ESTADO["eventos_unicos"],
+                "sources": list(ESTADO["fuentes"]),
+                "results_ledger": ESTADO["libro_resultados"],
+            }
+            cricsheet = globals().get("fuente_cricsheet")
+            if cricsheet and "cricsheet" in payload["budgets"]:
+                payload["budgets"] = dict(payload["budgets"])
+                payload["budgets"]["cricsheet"] = dict(payload["budgets"]["cricsheet"], **cricsheet.estado())
+            status_code = 503 if payload["status"] == "degraded" else 200
+
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(503 if payload["status"] == "degraded" else 200)
+        self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -164,6 +170,7 @@ motor_tenis = _importar("motor_tenis")
 motor_cricket = _importar("motor_cricket")
 fuente_cricsheet = _importar("fuente_cricsheet")
 fuente_balldontlie = _importar("fuente_balldontlie")
+cobertura = _importar("cobertura")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
     _ultimo_intento = {}
@@ -600,6 +607,8 @@ def _procesar_evento(ev, st, ahora_ts):
     st["femeninos"] += 1
     if not U.participante_definido(nom_loc) or not U.participante_definido(nom_vis) or U.firma_equipo(nom_loc) == U.firma_equipo(nom_vis):
         st["sin_datos"] += 1
+        if cobertura:
+            cobertura.registrar(clave, "identidad_no_fiable", deporte, torneo)
         return False
 
     if not _fecha_evento_valida(ev, ahora_ts, st):
@@ -616,6 +625,8 @@ def _procesar_evento(ev, st, ahora_ts):
             return False
         resultado_c = motor_cricket.evaluar(ev, fuente_cricsheet.historial(ev), ahora_ts)
         st["analizados"] += 1
+        if cobertura:
+            cobertura.registrar(clave, "evaluado", deporte, torneo)
         if resultado_c["alertar"]:
             if fuente_sportscore and not fuente_sportscore.permite_alerta(ev):
                 U.log("[cricket] detalle del mismo partido contradice el calendario; alerta omitida")
@@ -642,6 +653,8 @@ def _procesar_evento(ev, st, ahora_ts):
         wc = any(j.get("entry") == "WC" and j.get("entry_fuente") == "WTA cuadro oficial" for j in (local, visita))
         if not base[0] and not wc:
             st["analizados"] += 1
+            if cobertura:
+                cobertura.registrar(clave, "evaluado", deporte, torneo)
             return True
         perfiles = {}
         if fuente_wta:
@@ -649,6 +662,8 @@ def _procesar_evento(ev, st, ahora_ts):
                 perfiles[lado] = fuente_wta.perfil(j)
         resultado_t = motor_tenis.evaluar(ev, perfiles)
         st["analizados"] += 1
+        if cobertura:
+            cobertura.registrar(clave, "evaluado", deporte, torneo)
         if resultado_t["alertar"]:
             entregado = enviar_alerta(deporte, torneo, nom_loc, nom_vis,
                 str(ev.get("horario") or "A confirmar"), resultado_t["evidencia"], resultado_t["favorito"],
@@ -676,9 +691,13 @@ def _procesar_evento(ev, st, ahora_ts):
     if not forma_loc or not forma_vis:
         st["sin_datos"] += 1
         _registrar_sin_datos(clave, ev)
+        if cobertura:
+            cobertura.registrar(clave, "sin_historial", deporte, torneo)
         U.log(f"[datos-parciales] {torneo}: {nom_loc} vs {nom_vis}; forma {len(forma_loc)}/{len(forma_vis)}; se evalúan otras señales disponibles")
 
     st["analizados"] += 1
+    if cobertura:
+        cobertura.registrar(clave, "evaluado", deporte, torneo)
     perf_loc = motor_mismatches.evaluar_rendimiento_reciente(forma_loc, id_loc, deporte)
     perf_vis = motor_mismatches.evaluar_rendimiento_reciente(forma_vis, id_vis, deporte)
     triangs = motor_mismatches.triangular_rivales(forma_loc, id_loc, forma_vis, id_vis)
@@ -984,6 +1003,8 @@ def ejecutar_barrido_radar():
         return
 
     registro.podar()
+    if cobertura:
+        cobertura.podar()
     resumen = {}
     ahora_ts = time.time()
     t_inicio = time.monotonic()
@@ -1013,11 +1034,15 @@ def ejecutar_barrido_radar():
             continue
         if not all(U.participante_definido((ev.get(lado) or {}).get("nombre")) for lado in ("local", "visita")):
             st["sin_datos"] += 1
+            if cobertura:
+                cobertura.registrar(clave_ev, "identidad_no_fiable", ev.get("deporte", ""), ev.get("torneo", ""))
             continue
         if (ev.get("deporte") == "Tennis"
                 and not all((ev.get(lado) or {}).get("ranking") for lado in ("local", "visita"))
                 and not any((ev.get(lado) or {}).get("entry") == "WC" and (ev.get(lado) or {}).get("entry_fuente") == "WTA cuadro oficial" for lado in ("local", "visita"))):
             st["sin_datos"] += 1
+            if cobertura:
+                cobertura.registrar(clave_ev, "sin_ranking", ev.get("deporte", ""), ev.get("torneo", ""))
             continue
         if not _tiene_historial_propio(ev):
             if busquedas_por_nombre >= MAX_BUSQUEDAS_POR_NOMBRE:
@@ -1039,6 +1064,8 @@ def ejecutar_barrido_radar():
         registro.guardar()
 
     registro.guardar()
+    if cobertura:
+        cobertura.guardar()
     _guardar_enfriamiento(_enfriamiento)
     if libro_resultados:
         libro_resultados.guardar()

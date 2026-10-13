@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -646,6 +646,8 @@
+         # El ranking selecciona candidatos; WC puede abrir la evaluación de experiencia.
+         base = motor_mismatches.evaluar_mismatch_tenis(nom_loc, nom_vis, local.get("ranking"), visita.get("ranking"))
+         wc = any(j.get("entry") == "WC" and j.get("entry_fuente") == "WTA cuadro oficial" for j in (local, visita))
+         if not base[0] and not wc:
+             st["analizados"] += 1
++            if cobertura:
++                cobertura.registrar(clave, "evaluado", deporte, torneo)
+             return True
