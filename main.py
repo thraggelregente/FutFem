@@ -59,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "verified-free-replacements-v1",
+            "revision": "sportapi-women-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -155,6 +155,7 @@ fuente_cev = _importar("fuente_cev")
 fuente_bbs = _importar("fuente_bbs")
 fuente_sportscore = _importar("fuente_sportscore")
 fuente_worldrugby = _importar("fuente_worldrugby")
+fuente_sportapi = _importar("fuente_sportapi")
 motor_tenis = _importar("motor_tenis")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
@@ -188,7 +189,7 @@ def _guardar_enfriamiento(enf: dict[str, tuple[float, int]]) -> None:
 
 
 _enfriamiento: dict[str, tuple[float, int]] = _cargar_enfriamiento()
-_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl", "fivb", "cev", "bbs", "sportscore", "worldrugby"}
+_FUENTES_CON_HISTORIAL_PROPIO = {"highlightly", "api_sports", "openligadb", "thesportsdb", "espn", "pwhl", "fivb", "cev", "bbs", "sportscore", "worldrugby", "sportapi"}
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +412,7 @@ _COSTO_HISTORIAL = {
 
 def _historial_equipo(ev, lado):
     if ev.get("historial_aislado"):
-        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs, "sportscore": fuente_sportscore, "worldrugby": fuente_worldrugby}.get(ev.get("fuente"))
+        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs, "sportscore": fuente_sportscore, "worldrugby": fuente_worldrugby, "sportapi": fuente_sportapi}.get(ev.get("fuente"))
         return modulo.historial_equipo(ev, lado) if modulo else []
     principal = ev.get(lado) or {}
     id_evento = principal.get("id")
@@ -455,6 +456,8 @@ def _historial_equipo(ev, lado):
                 historial = fuente_sportscore.historial_equipo(candidato, lado_candidato)
             elif fuente == "worldrugby" and fuente_worldrugby:
                 historial = fuente_worldrugby.historial_equipo(candidato, lado_candidato)
+            elif fuente == "sportapi" and fuente_sportapi:
+                historial = fuente_sportapi.historial_equipo(candidato, lado_candidato)
             # Remapea los dos participantes del evento, incluso con localía invertida.
             mapa_ids = {}
             for lado_actual in ("local", "visita"):
@@ -709,6 +712,7 @@ def _procesar_evento(ev, st, ahora_ts):
 # Agregación multi-fuente
 # ---------------------------------------------------------------------------
 _PRIORIDAD_FUENTE = {
+    "sportapi": 4,
     "worldrugby": -2,
     "sportscore": 7,
     "bbs": 4,
@@ -758,6 +762,7 @@ def _recolectar_eventos(resumen):
         (fuente_bbs, "bbs"),
         (fuente_sportscore, "sportscore"),
         (fuente_worldrugby, "worldrugby"),
+        (fuente_sportapi, "sportapi"),
         (fuente_wta, "wta"),
         (fuente_pwhl, "pwhl"),
         (fuente_highlightly, "highlightly"),
@@ -992,7 +997,7 @@ def ejecutar_barrido_radar():
     ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
     ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())
     U.guardar_caches((fuente_api_football, fuente_highlightly, fuente_thesportsdb, fuente_theoddsapi,
-                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby))
+                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi))
     ESTADO["presupuestos"] = _resumen_presupuestos()
     ESTADO["http_last_sweep"] = {fuente: dict(codigos) for fuente, codigos in U.ESTADISTICAS.items()}
     ESTADO["barridos"] += 1
@@ -1020,18 +1025,19 @@ def _resumen_presupuestos():
     if fuente_pwhl and fuente_pwhl.disponible():
         p = fuente_pwhl.presupuesto
         salida["pwhl"] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes()}
-    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby):
+    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi):
         if modulo and modulo.disponible():
             p = modulo.presupuesto
             salida[modulo.FUENTE] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes(),
-                                     "ventana": "24h móvil" if getattr(p, "ventana_horas", None) == 24 else "día UTC"}
+                                     "ventana": "24h móvil" if getattr(p, "ventana_horas", None) == 24 else "día UTC",
+                                     "saldo_ultimo_proveedor": getattr(p, "saldo_proveedor", None)}
     return salida
 
 
 def _fuentes_activas():
     fuentes = []
     for modulo, nombre in ((fuente_fivb, "FIVB/VIS"), (fuente_cev, "CEV"), (fuente_bbs, "Big Balls Sports Data (WNBA)"),
-                           (fuente_sportscore, "SportScore"), (fuente_worldrugby, "World Rugby (femenino XV)")):
+                           (fuente_sportscore, "SportScore"), (fuente_worldrugby, "World Rugby (femenino XV)"), (fuente_sportapi, "SportAPI.ai")):
         if modulo and modulo.disponible():
             fuentes.append(nombre)
     if fuente_wta and fuente_wta.disponible():

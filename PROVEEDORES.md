@@ -120,3 +120,18 @@ Alternativas contrastadas y no activadas:
 - TheSportsDB PWR 5166: género Female comprobado, metadata de temporada 2025-2026; consulta 2026-2027 devuelve `events: null`. No se toma esa respuesta 200 como calendario vigente.
 
 `/health` incluye los códigos HTTP agregados del último barrido, sin keys ni datos personales, para distinguir fuentes configuradas de respuestas efectivamente recibidas. Los contadores vacíos pueden indicar lectura desde caché, no caída. No se alteran los presupuestos de Highlightly, OddsPapi, The Odds API ni BBS.
+
+
+## SportAPI.ai autenticada — 13/10/2026
+
+La key Free proporcionada por el operador se usó solo en headers y pruebas de memoria; no se guarda en este repositorio. Primer response autenticado confirmó `Limit=2000`, `Remaining=1999` y reset 00 UTC. Nueve llamadas totales de comprobación dejaron 1.991, salvo uso concurrente posterior. Se verificaron catálogo, tres ligas, WSL standings, fixtures de hoy/mañana y Arsenal, más WSL2 desde el conector.
+
+Catálogo: 117 competiciones, 13 femeninas identificadas: AFC Women's Asian Cup (96), English WSL 2 (80), Women's FA Cup (90), Women's League Cup (95), Women's Super League (59), WSL/WSL2 Play-off (17341), UEFA Women's Champions League (67), UEFA Women's Nations League (111), UEFA Women's Under 19 Championship (14023), Women's European World Cup Qualifiers (125), Welsh Premier Women's League (73), FIFA Women's Champions Cup (109), Internationals Women (93). No hay NWSL ni ligas femeninas de Alemania/España identificadas en este catálogo. Presencia no implica cobertura completa ni actividad actual.
+
+Conector opcional `fuente_sportapi.py`, key solo vía `SPORTAPI_API_KEY` en Render. Sin key no realiza requests y no figura como activo. Hace una lectura de catálogo cacheada 24 h y dos o tres fechas cada hora (alrededor de 49–73 requests/día antes de históricos). Historial por ID de equipo solo para eventos/candidatos, caché 6 h; ritmo propio 20/min, cupo 2.000/día UTC con reserva 10, corregido con saldo real observado. No cambia quotas de otras fuentes y no consulta mercados. Respeta 429/reset/Retry-After y detiene accesos 401/403.
+
+Prueba: cuatro eventos femeninos a menos de 24 h con kickoff UTC y cinco resultados WSL recientes de Arsenal. La consulta de liga limita recent_results a 20 globales; no se usa como historial completo del equipo. Los perfiles también incluyen futuros y pueden truncar resultados: falta de datos no prueba debilidad. El historial queda aislado por league ID y exige participantes, estado FT, marcador válido y últimos 90 días. Rechaza PENS/AET, aplazados, masculino y fechas futuras; añade U19 a ambos equipos si el torneo lo especifica. El alias exacto United States→USA coincide con el nombre de SportScore y evita duplicar ese partido.
+
+Se encontró una diferencia temporal real: US–España y Brasil–Argentina tienen date 13/10, datetime CET 14/10 01:00/01:30 y kickoff_utc 13/10 23:00/23:30. Se consultan las fronteras UTC y CET y se deduplica por ID. Solo kickoff_utc decide hora/ventana; nunca se interpreta datetime como UTC. En los perfiles de equipo solo se proporciona día: se conserva esa precisión y se deshabilitan señales de descanso/congestión que requieren calendario completo. La tabla WSL devuelve 14 equipos, pero sin una temporada explícita verificable, por lo que no se incorpora al motor. Contrato: https://sportapi.ai/docs ; cuota: https://sportapi.ai/pricing .
+
+Activación pendiente de que el operador guarde `SPORTAPI_API_KEY` en las variables de Render. El código está preparado, pero una prueba local con key no acredita activación en producción. Validación: 69 pruebas offline, más respuestas autenticadas actuales; no se publican credenciales.

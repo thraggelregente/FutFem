@@ -13,6 +13,7 @@ import fuente_espn as E
 import fuente_bbs as BB
 import fuente_sportscore as S
 import fuente_worldrugby as WR
+import fuente_sportapi as SA
 import fuente_openligadb as OL
 import fuente_api_football as A
 import mensajes
@@ -114,6 +115,65 @@ class FuentesGratisTests(unittest.TestCase):
             self.assertEqual(len(WR._historial), 1)
             self.assertEqual(red.call_count, 2)
 
+    def test_sportapi_sin_key_no_consulta(self):
+        with patch.object(SA, "API_KEY", ""), patch.object(U, "get_json") as red:
+            self.assertEqual(SA.obtener_eventos("Soccer"), [])
+            red.assert_not_called()
+
+    def test_sportapi_filtra_liga_genero_edad_y_estado(self):
+        raw = {"id": 1, "home_id": 2, "away_id": 3, "home_team": "A", "away_team": "B",
+               "league_id": 14023, "league_name": "UEFA Women's Under 19 Championship",
+               "kickoff_utc": U.ts_a_iso_utc(time.time()+3600), "status": "Scheduled"}
+        cat = {14023: raw["league_name"]}
+        p = SA.normalizar(raw, cat)
+        self.assertIn("U19", p["local"]["nombre"])
+        for cambio in ({"status": "Postponed"}, {"status": "LIVE"}, {"league_id": 24},
+                       {"league_name": "Premier League"}, {"home_team": "Equipo U17"}, {"away_id": 2}, {"kickoff_utc": "2026-10-13"}):
+            self.assertIsNone(SA.normalizar(dict(raw, **cambio), cat))
+
+    def test_sportapi_historial_por_dia_no_demuestra_calendario_completo(self):
+        raw = {"id": 1, "home_id": 2, "away_id": 3, "home_team": "A", "away_team": "B",
+               "league_id": 59, "league_name": "Women's Super League", "status": "FT",
+               "date": (datetime.now(timezone.utc)-timedelta(days=1)).date().isoformat(), "home_score": 3, "away_score": 1}
+        cat = {59: raw["league_name"]}
+        self.assertIsNone(SA.normalizar(raw, cat))
+        p = SA.normalizar(raw, cat, solo_fecha=True)
+        self.assertTrue(p["_fecha_solo_dia"])
+        self.assertFalse(p["_calendario_completo"])
+        with patch.object(SA, "_get", return_value={"team": {"id": 2}, "matches": [raw, dict(raw, league_id=24)]}), \
+             patch.object(SA, "catalogo_femenino", return_value=cat):
+            self.assertEqual(len(SA.historial_equipo(p, "local")), 1)
+
+    def test_sportapi_frontera_utc_cet_y_fixture_duplicado(self):
+        ahora = datetime(2026, 10, 13, 23, 30, tzinfo=timezone.utc)
+        raw = {"id": 1, "home_id": 2, "away_id": 3, "home_team": "United States", "away_team": "Spain",
+               "league_id": 93, "league_name": "Internationals Women", "status": "Scheduled",
+               "kickoff_utc": "2026-10-13T23:45:00Z"}
+        def datos(ruta, **kwargs):
+            return {"success": True, "date": ruta.rsplit("/", 1)[-1], "data": [raw]}
+        with patch.object(SA, "API_KEY", "fake"), patch.object(SA, "_deshabilitada", False), \
+             patch.object(SA, "catalogo_femenino", return_value={93: raw["league_name"]}), \
+             patch.object(SA, "datetime", wraps=datetime) as reloj, patch.object(SA, "_get", side_effect=datos) as red, \
+             patch.object(SA.time, "time", return_value=ahora.timestamp()):
+            reloj.now.return_value = ahora
+            evs = SA.obtener_eventos("Soccer")
+            self.assertEqual(len(evs), 1)
+            self.assertEqual(U.firma_equipo(evs[0]["local"]["nombre"]), U.firma_equipo("USA Women"))
+            self.assertEqual({c.args[0] for c in red.call_args_list}, {
+                "/fixtures/date/2026-10-13", "/fixtures/date/2026-10-14", "/fixtures/date/2026-10-15"})
+
+    def test_sportapi_saldo_real_tras_request(self):
+        def respuesta(*args, **kwargs):
+            kwargs["info"].update(status=200, headers={"X-RateLimit-Remaining": "1990"})
+            return {"success": True, "data": []}
+        p = U.PresupuestoDiario("test_sportapi", 2000, reserva=10)
+        with patch.object(SA, "API_KEY", "fake"), patch.object(SA, "_deshabilitada", False), \
+             patch.object(SA, "presupuesto", p), patch.object(SA._cache, "get", return_value=(False, None)), \
+             patch.object(SA._cache, "set"), patch.object(SA._ritmo, "esperar"), patch.object(U, "get_json", side_effect=respuesta):
+            SA._get("/leagues")
+            self.assertEqual(p.usadas, 10)
+            self.assertEqual(p.saldo_proveedor, 1990)
+
     def test_cuenta_suspendida_desactivada_no_hace_requests(self):
         with patch.object(A, "ACTIVO", False), patch.object(A, "API_KEY", "fake"), patch.object(U, "get_json") as red:
             self.assertIsNone(A._get("Soccer", "/fixtures", {}))
@@ -201,7 +261,7 @@ class FuentesGratisTests(unittest.TestCase):
              patch.object(B, "fuente_espn", None), patch.object(B, "fuente_wta", None), \
              patch.object(B, "fuente_pwhl", None), patch.object(B, "fuente_bbs", None), \
              patch.object(B, "fuente_cev", None), patch.object(B, "fuente_fivb", None), \
-             patch.object(B, "fuente_sportscore", None), patch.object(B, "fuente_worldrugby", None):
+             patch.object(B, "fuente_sportscore", None), patch.object(B, "fuente_worldrugby", None), patch.object(B, "fuente_sportapi", None):
             B._recolectar_eventos({})
             self.assertFalse({c.args[0] for c in pedidos.call_args_list} & B.DEPORTES_SIN_CUPO_COMERCIAL)
 
