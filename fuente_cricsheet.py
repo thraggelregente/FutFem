@@ -92,6 +92,7 @@ def normalizar(raw, ident, ahora=None):
     if info.get("team_type") not in ("international", "club"):
         return None
     return {"id": str(ident), "fecha": fechas[0], "formato": formato,
+            "temporada": str(info.get("season") or ""),
             "tipo_equipo": info["team_type"], "competicion": evento["name"],
             "equipos": [a, b], "ganadora": identidad(outcome["winner"]),
             "unidad": unidad, "margen": margen, "fuente": FUENTE}

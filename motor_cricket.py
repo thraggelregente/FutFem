@@ -12,6 +12,8 @@ def evaluar(evento, registros, ahora=None):
     formato = evento.get("formato_cricket")
     if formato not in ("T20", "ODI"):
         return vacio
+    if evento.get("tipo_equipo_cricket") == "club" and not evento.get("temporada_cricket"):
+        return dict(vacio, motivo="calendario de clubes sin temporada explícita verificable")
     a, b = (C.identidad(evento[l]["nombre"]) for l in ("local", "visita"))
     limite = min(ahora, evento.get("startTimestamp", ahora))
     rows, vistos = [], set()
@@ -26,6 +28,8 @@ def evaluar(evento, registros, ahora=None):
             continue
         # Clubes: misma competición explícita; selecciones: mismo formato/categoría.
         if p["tipo_equipo"] == "club" and U.normalizar(p.get("competicion", "")) != U.normalizar(evento["torneo"]):
+            continue
+        if p["tipo_equipo"] == "club" and p.get("temporada") != str(evento.get("temporada_cricket")):
             continue
         if p.get("ganadora") not in p.get("equipos", []):
             continue

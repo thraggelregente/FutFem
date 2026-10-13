@@ -98,6 +98,12 @@ class CricketContextoTests(unittest.TestCase):
         self.assertFalse(M.evaluar(ev, [dict(p, fecha="2099-01-01") for p in rows])["alertar"])
         self.assertFalse(M.evaluar(ev, [dict(p, margen=1) for p in rows])["alertar"])
         self.assertFalse(M.evaluar(ev, rows[:1]*50)["alertar"])
+        club = dict(ev, tipo_equipo_cricket="club", temporada_cricket="2026")
+        club_rows = [dict(p, tipo_equipo="club", competicion=ev["torneo"], temporada="2026") for p in rows]
+        self.assertTrue(M.evaluar(club, club_rows)["alertar"])
+        self.assertFalse(M.evaluar(club, [dict(p, temporada="2025") for p in club_rows])["alertar"])
+        club.pop("temporada_cricket")
+        self.assertFalse(M.evaluar(club, club_rows)["alertar"])
 
     def test_clubes_no_mezclan_competiciones(self):
         ev = S.normalizar(raw_ss(), deporte="Cricket")
