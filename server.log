@@ -1,0 +1,8 @@
+[13/10 20:00:20] [health] servidor HTTP escuchando en puerto 10000
+[13/10 20:00:21] Radar Femenino: servicio iniciado
+[13/10 20:00:21] Persistencia de estado: archivo local (se pierde al reiniciar/deployar)
+[13/10 20:00:21] Intervalo=900s; máximo de eventos/ciclo=100
+[13/10 20:00:21] Fuentes configuradas: FIVB/VIS, CEV, SportScore, World Rugby (femenino XV), Cricsheet (resultados femeninos), WTA oficial (cuadros, WC e historial), PWHL oficial, OpenLigaDB sin clave, TheSportsDB V1 (fixtures + historial), ESPN (respaldo)
+[13/10 20:00:21] [persistencia] ADVERTENCIA: el filesystem local de Render es efímero; configurá Upstash para estado duradero
+[13/10 20:00:21] [telegram] falta TELEGRAM_TOKEN; mensaje no enviado
+[13/10 20:00:21] === Barrido de asimetrías deportivas femeninas ===

@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -1044,6 +1044,8 @@
+         registro.guardar()
+
+     registro.guardar()
++    if cobertura:
++        cobertura.guardar()
+     _guardar_enfriamiento(_enfriamiento)
+     if libro_resultados:
+         libro_resultados.guardar()

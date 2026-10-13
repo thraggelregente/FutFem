@@ -1,0 +1,17 @@
+--- main.py
++++ main.py
+@@ -1017,10 +1017,14 @@
+             continue
+         if not all(U.participante_definido((ev.get(lado) or {}).get("nombre")) for lado in ("local", "visita")):
+             st["sin_datos"] += 1
++            if cobertura:
++                cobertura.registrar(clave_ev, "identidad_no_fiable", ev.get("deporte", ""), ev.get("torneo", ""))
+             continue
+         if (ev.get("deporte") == "Tennis"
+                 and not all((ev.get(lado) or {}).get("ranking") for lado in ("local", "visita"))
+                 and not any((ev.get(lado) or {}).get("entry") == "WC" and (ev.get(lado) or {}).get("entry_fuente") == "WTA cuadro oficial" for lado in ("local", "visita"))):
+             st["sin_datos"] += 1
++            if cobertura:
++                cobertura.registrar(clave_ev, "sin_ranking", ev.get("deporte", ""), ev.get("torneo", ""))
+             continue
+         if not _tiene_historial_propio(ev):

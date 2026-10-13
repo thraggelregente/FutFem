@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -617,6 +617,8 @@
+             return False
+         resultado_c = motor_cricket.evaluar(ev, fuente_cricsheet.historial(ev), ahora_ts)
+         st["analizados"] += 1
++        if cobertura:
++            cobertura.registrar(clave, "evaluado", deporte, torneo)
+         if resultado_c["alertar"]:
+             if fuente_sportscore and not fuente_sportscore.permite_alerta(ev):
+                 U.log("[cricket] detalle del mismo partido contradice el calendario; alerta omitida")

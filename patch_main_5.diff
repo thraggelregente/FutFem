@@ -1,0 +1,11 @@
+--- main.py
++++ main.py
+@@ -647,6 +647,8 @@
+                 perfiles[lado] = fuente_wta.perfil(j)
+         resultado_t = motor_tenis.evaluar(ev, perfiles)
+         st["analizados"] += 1
++        if cobertura:
++            cobertura.registrar(clave, "evaluado", deporte, torneo)
+         if resultado_t["alertar"]:
+             entregado = enviar_alerta(deporte, torneo, nom_loc, nom_vis,
+                 str(ev.get("horario") or "A confirmar"), resultado_t["evidencia"], resultado_t["favorito"],
