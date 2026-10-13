@@ -95,6 +95,12 @@ class FuentesGratisTests(unittest.TestCase):
                        {"events": [dict(raw["events"][0], label="Women U20")]}):
             self.assertIsNone(WR.normalizar(dict(raw, **cambio)))
 
+    def test_worldrugby_no_alerta_partido_aplazado(self):
+        raw = wr_fila()
+        ts = raw["time"]["millis"] / 1000
+        self.assertIsNotNone(WR.normalizar(dict(raw, status="U"), ahora=ts-3600))
+        self.assertIsNone(WR.normalizar(dict(raw, status="UP"), ahora=ts-3600))
+
     def test_worldrugby_historial_aisla_competicion(self):
         p = WR.normalizar(wr_fila())
         with patch.object(WR, "_historial", [p, dict(p, contexto_competicion="otro torneo")]):

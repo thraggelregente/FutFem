@@ -66,7 +66,7 @@ def normalizar(raw, ahora=None):
     comunes = {"fuente": FUENTE, "deporte": "Rugby", "torneo": titulo,
                "local": local, "visita": visita, "femenino_seguro": True, "historial_aislado": True,
                "contexto_competicion": "worldrugby:wru:" + str(torneo["id"]), "startTimestamp": int(ts)}
-    if raw.get("status") in ("U", "UP") and ahora < ts <= ahora + 86400:
+    if raw.get("status") == "U" and ahora < ts <= ahora + 86400:
         if f.hour == 0 and f.minute == 0:
             return None  # No hay campo que confirme la precisión de una hora de medianoche.
         return dict(comunes, id="wr_" + str(raw["matchId"]), tipo_estado="pre", horario=U.formatear_hora_arg(ts))
