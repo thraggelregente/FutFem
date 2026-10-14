@@ -120,7 +120,7 @@ def normalizar(raw, catalogo, ahora=None, solo_fecha=False):
     puntos = enteros(raw.get("home_score"), raw.get("away_score"))
     if raw.get("status") != "FT" or not puntos or min(puntos) < 0 or not ahora - 90 * 86400 <= ts < ahora:
         return None
-    return dict(comunes, fecha=fecha, _fecha_solo_dia=precision_dia, _calendario_completo=False,
+    return dict(comunes, id="spai_"+str(match_id), _outcome_status="normal", fecha=fecha, _fecha_solo_dia=precision_dia, _calendario_completo=False,
                 id_local=comunes["local"]["id"], id_visita=comunes["visita"]["id"],
                 nom_local=a, nom_visita=b, puntos_local=puntos[0], puntos_visita=puntos[1])
 
@@ -163,3 +163,18 @@ def historial_equipo(evento, lado):
              if p and "fecha" in p and p["contexto_competicion"] == evento.get("contexto_competicion")
              and equipo.get("id") in (p["id_local"], p["id_visita"])]
     return sorted(filas, key=lambda p: p["fecha"], reverse=True)[:10]
+
+
+def resultados_evaluacion(evento):
+    from resultados_evaluacion import de_historial
+    if evento.get('deporte')!='Soccer' or not disponible():
+        return []
+    if not any(o.get('fuente')==FUENTE for o in evento.get('_observaciones') or [evento]):
+        return []
+    dia=datetime.fromtimestamp(evento['startTimestamp'],timezone.utc).date().isoformat()
+    data=_get('/fixtures/date/'+dia,ttl=1800) or {}
+    if data.get('date')!=dia:
+        return []
+    catalogo=catalogo_femenino()
+    return [r for raw in data.get('data') or [] if (p:=normalizar(raw,catalogo,solo_fecha=True)) and 'fecha' in p
+            and (r:=de_historial(p,'Soccer',FUENTE))]

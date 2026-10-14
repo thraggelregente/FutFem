@@ -325,6 +325,7 @@ def _partido_terminado(evento):
         "id_visita": ev["id"], "nom_visita": ev["nombre"],
         "puntos_local": pl, "puntos_visita": pv,
         "_id": evento.get("id"),
+        "_outcome_status": "penalties" if "PEN" in nombre_estado or "SHOOTOUT" in nombre_estado else "overtime" if "OVERTIME" in nombre_estado else "normal",
     }
 
 
@@ -506,3 +507,61 @@ def lesiones_equipo(deporte_interno, nombre_equipo, inferir_cero=False):
             return tabla[firma]
         # Ausencia en el feed no demuestra cero lesiones.
     return None
+
+
+def resultados_evaluacion(evento):
+    from resultados_evaluacion import de_historial
+    refs = [o.get('liga_ref') for o in evento.get('_observaciones') or [evento] if o.get('fuente') == FUENTE and o.get('liga_ref')]
+    if not refs:
+        return []
+    sport, slug = refs[0]
+    dia = datetime.fromtimestamp(evento['startTimestamp'], timezone.utc).strftime('%Y%m%d')
+    data = _scoreboard(sport, slug, dia, _cache_resultados_evaluacion, limit=100)
+    if not isinstance(data, dict):
+        return []
+    rows = data.get('events') or []
+    if len(rows) >= 100:
+        import cobertura_radar
+        cobertura_radar.actual.truncado(FUENTE, evento['deporte'])
+    if sport == 'tennis':
+        return _resultados_tenis_evaluacion(rows)
+    return [r for raw in rows if (p := _partido_terminado(raw)) and (r := de_historial(p, evento['deporte'], FUENTE))]
+
+
+_cache_resultados_evaluacion = U.CachePersistente('espn_resultados_evaluacion', 1800, max_items=128)
+
+def _resultados_tenis_evaluacion(rows):
+    resultados = []
+    for torneo in rows:
+        for group in torneo.get('groupings') or []:
+            if 'double' in str((group.get('grouping') or {}).get('displayName', '')).lower():
+                continue
+            for match in group.get('competitions') or []:
+                status = (match.get('status') or {}).get('type') or {}
+                cs = match.get('competitors') or []
+                if not status.get('completed') or len(cs) != 2:
+                    continue
+                names = [(c.get('athlete') or {}).get('displayName') for c in cs]
+                if not all(names) or any('/' in n for n in names):
+                    continue
+                won = [i for i,c in enumerate(cs) if c.get('winner') is True]
+                if len(won) != 1:
+                    continue
+                state = str(status.get('name', '')).upper()
+                special = 'retirement' if 'RETIR' in state else 'walkover' if 'WALK' in state else 'normal' if state in ('STATUS_FINAL', 'STATUS_FULL_TIME') else None
+                if special is None:
+                    continue
+                sets = []
+                a, b = cs[0].get('linescores') or [], cs[1].get('linescores') or []
+                if len(a) == len(b):
+                    for sa,sb in zip(a,b):
+                        ga,gb = _entero(sa.get('value')), _entero(sb.get('value'))
+                        if ga is not None and gb is not None:
+                            sets.append([ga,gb])
+                # Un ganador confirmado permite victoria; juegos sólo si el feed los expone.
+                resultados.append({'sport':'Tennis', 'source':FUENTE, 'provider_id':'espn_' + str(match.get('id')),
+                    'participants':[U.firma_equipo(n) for n in names], 'participant_names':names,
+                    'winner':U.firma_equipo(names[won[0]]), 'status':special, 'sets':sets,
+                    'score':None, 'original_score':[c.get('score') for c in cs], 'verified_at':time.time(),
+                    'competition_id':['tennis','wta'], 'season':'unknown', 'category':'women_age_unknown', 'format':'singles'})
+    return resultados

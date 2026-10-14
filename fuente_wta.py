@@ -192,7 +192,8 @@ def normalizar_historial(raw, pid):
     gf, gc = sum(int(a) for a, b in sets), sum(int(b) for a, b in sets)
     gano = raw["winner"] == 1
     torneo = raw.get("tournament") or {}
-    return {"ts": ts, "gano": gano, "juegos_favor": gf if gano else gc, "juegos_contra": gc if gano else gf,
+    return {"ts": ts, "gano": gano, "marcador_original": raw.get("scores"),
+            "sets_desde_ganadora": [[int(a), int(b)] for a,b in sets], "estado_resultado": "normal", "juegos_favor": gf if gano else gc, "juegos_contra": gc if gano else gf,
             "superficie": str(raw.get("Surface") or "").title(), "rival": (raw.get("opponent") or {}).get("fullName"),
             "ranking_rival": raw.get("rank_2") if isinstance(raw.get("rank_2"), int) and raw["rank_2"] > 0 else None,
             "nivel": torneo.get("level") or raw.get("TournamentLevel"), "fecha_precision": "semana del torneo",

@@ -17,3 +17,9 @@ ranking_wta_oficial_v1.json
 oddspapi_ventana.json
 oddspapi_historial.json
 theoddsapi_scores.json
+
+# Diario deportivo y evaluación generados, nunca versionar.
+evaluacion_v1_*.json
+cobertura_diaria_v1.json
+resultados_evaluacion_v1.json
+radar-export*.jsonl

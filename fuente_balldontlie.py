@@ -69,7 +69,7 @@ def normalizar(raw, ahora=None):
     puntos = enteros(raw.get("home_score"), raw.get("away_score"))
     if raw.get("status_state") != "final" or not puntos or min(puntos) < 0 or puntos[0] == puntos[1] or not ahora-90*86400 <= ts < ahora:
         return None
-    return dict(base, fecha=U.ts_a_iso_utc(ts), id_local=local["id"], id_visita=visita["id"],
+    return dict(base, id="bdl_"+str(raw["id"]), _outcome_status="normal", fecha=U.ts_a_iso_utc(ts), id_local=local["id"], id_visita=visita["id"],
                 nom_local=local["nombre"], nom_visita=visita["nombre"], puntos_local=puntos[0], puntos_visita=puntos[1])
 
 
@@ -110,3 +110,14 @@ def historial_equipo(evento, lado):
               and equipo["id"] in (p["id_local"], p["id_visita"])
               and p["contexto_competicion"] == evento.get("contexto_competicion")]
     return sorted({(p["fecha"], p["id_local"], p["id_visita"]): p for p in salida}.values(), key=lambda p:p["fecha"], reverse=True)[:10]
+
+
+def resultados_evaluacion(evento):
+    from resultados_evaluacion import de_historial
+    if evento.get('deporte')!='Basketball' or not disponible():
+        return []
+    if not any(o.get('fuente')==FUENTE for o in evento.get('_observaciones') or [evento]):
+        return []
+    dia=datetime.fromtimestamp(evento['startTimestamp'],timezone.utc).date().isoformat()
+    return [r for raw in _paginas({'start_date':dia,'end_date':dia}) if (p:=normalizar(raw)) and 'fecha' in p
+            and (r:=de_historial(p,'Basketball',FUENTE))]

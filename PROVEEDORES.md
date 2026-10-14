@@ -168,3 +168,7 @@ Soccer mantiene IDs existentes, cachés y búsquedas. Básquet/tenis usan namesp
 Prueba real del conector ampliado: 32 próximos de tenis y uno de básquet, cuatro requests compartidos. Validación: 74 pruebas offline, respuestas públicas API y contraste de página canónica. Fuentes: https://sportscore.com/developers/ , https://sportscore.com/developers/openapi.yaml , https://sportscore.com/tennis/ , https://sportscore.com/basketball/ y https://sportscore.com/cricket/ . No se promete cobertura completa por estos snapshots.
 
 Comprobación adicional de tabla: `football`/`english-fa-womens-super-league` devuelve HTTP 200 y tabla WSL. EuroLeague Women se resolvió por búsqueda exacta a `euroleague-women`, y con ese slug sigue devolviendo 404. La tabla WSL no publica temporada explícita: no se añade al motor como tabla vigente por la mera fecha de actualización. La web conserva información más rica que algunos widgets, por ejemplo el ID canónico Armann.
+
+## Mapa y aporte real por deporte
+
+El mapa de fuentes por deporte y sus límites está en [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md). `/health` separa `source_capabilities` (rutas habilitadas) de `coverage.sports` (fuentes de calendario que aportaron eventos en el último barrido). Una API configurada no certifica cobertura completa de ligas femeninas. Tennis API ATP WTA ITF es opcional, 50 solicitudes/24h, con suscripción gratuita y `TENNIS_API_RAPIDAPI_KEY`.

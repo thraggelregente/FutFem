@@ -104,6 +104,11 @@ def reiniciar_estadisticas():
 
 
 def _registrar(fuente, codigo):
+    try:
+        import planificador_datos
+        planificador_datos.actual.http(fuente, codigo)
+    except Exception:
+        pass
     with _lock:
         ESTADISTICAS[fuente][codigo] += 1
 
@@ -121,6 +126,9 @@ def proxies_desde_env(nombre_var):
 
 
 def _pedir(url, headers, params, timeout, proxies, fuente):
+    import planificador_datos
+    if not planificador_datos.actual.permitido(fuente):
+        return None
     base = headers or HEADERS_NAVEGADOR
     if curl_requests is not None:
         try:
@@ -233,7 +241,7 @@ def usa_upstash():
 def persistencia_es_duradera():
     if usa_upstash():
         return _UPSTASH_ULTIMO_OK is not False
-    return "DATA_DIR" in os.environ
+    return os.environ.get("DATA_DIR_DURABLE", "0") == "1"
 
 
 def modo_persistencia():
@@ -254,11 +262,32 @@ def _upstash(comando):
             timeout=8,
         )
         r.raise_for_status()
-        resultado = r.json().get("result")
+        payload = r.json()
+        if not isinstance(payload, dict) or payload.get("error") or "result" not in payload:
+            raise ValueError("redis_command_failed")
+        resultado = payload["result"]
         _UPSTASH_ULTIMO_OK = True
         return resultado
     except Exception:
         _UPSTASH_ULTIMO_OK = False
+        raise
+
+
+def _upstash_pipeline(comandos):
+    """Resultados por comando: HTTP 200 no garantiza éxito del lote."""
+    global _UPSTASH_ULTIMO_OK
+    try:
+        r=requests.post(UPSTASH_URL.rstrip('/')+'/pipeline',
+                        headers={'Authorization':f'Bearer {UPSTASH_TOKEN}'}, json=comandos, timeout=8)
+        r.raise_for_status()
+        values=r.json()
+        if not isinstance(values,list) or len(values)!=len(comandos):
+            raise ValueError('redis_pipeline_invalid')
+        ok=[isinstance(v,dict) and 'result' in v and not v.get('error') for v in values]
+        _UPSTASH_ULTIMO_OK=all(ok)
+        return ok
+    except Exception:
+        _UPSTASH_ULTIMO_OK=False
         raise
 
 
@@ -327,6 +356,11 @@ class CachePersistente:
         if isinstance(item, list) and len(item) == 2:
             try:
                 if time.time() < float(item[0]):
+                    try:
+                        import planificador_datos
+                        planificador_datos.actual.stats[self.nombre + ":cache_hit"] += 1
+                    except Exception:
+                        pass
                     return True, item[1]
             except (TypeError, ValueError):
                 pass

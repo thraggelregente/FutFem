@@ -14,12 +14,13 @@ def _banda(rank):
     return 0 if rank <= 100 else 1 if rank <= 300 else 2 if rank <= 700 else 3
 
 
-def _comparar(perfil_f, perfil_r, superficie=None):
+def _comparar(perfil_f, perfil_r, superficie=None, ahora=None):
     """Compara victorias solo en bandas de rivales que ambos han enfrentado."""
+    ahora = time.time() if ahora is None else ahora
     listas = []
     for perfil in (perfil_f, perfil_r):
         lista = [p for p in (perfil or {}).get("partidos", [])
-                 if p["ts"] >= time.time() - (365 if superficie else 120) * 86400
+                 if ahora - (365 if superficie else 120) * 86400 <= p["ts"] <= ahora
                  and (not superficie or p.get("superficie", "").lower() == superficie.lower())
                  and _banda(p.get("ranking_rival")) is not None]
         listas.append(lista)
@@ -56,7 +57,7 @@ def _novata_documentada(perfil):
                 and not (isinstance(mejor, (int, float)) and 0 < mejor <= 100))
 
 
-def evaluar(ev, perfiles=None):
+def evaluar(ev, perfiles=None, ahora=None):
     perfiles = perfiles or {}
     a, b = ev.get("local") or {}, ev.get("visita") or {}
     hay, detalle, fav, puntos = M.evaluar_mismatch_tenis(a.get("nombre"), b.get("nombre"), a.get("ranking"), b.get("ranking"))
@@ -98,8 +99,8 @@ def evaluar(ev, perfiles=None):
         evidencia.append(f"Historial oficial registrado en los últimos dos años: {jug_f.get('nombre')} "
                          f"{pf.get('muestras_2anios', 0)} partidos; {jug_r.get('nombre')} {pr.get('muestras_2anios', 0)} partidos. "
                          "No equivale necesariamente a toda su carrera. Las fechas identifican la semana del torneo, no el día de cada partido.")
-    forma = _comparar(pf, pr)
-    superficie = _comparar(pf, pr, ev.get("superficie")) if ev.get("superficie") else None
+    forma = _comparar(pf, pr, ahora=ahora)
+    superficie = _comparar(pf, pr, ev.get("superficie"), ahora=ahora) if ev.get("superficie") else None
     apoyo = 0
     contradiccion = False
     for nombre, res in (("Forma frente a bandas comparables de rivales", forma), ("Superficie oficial " + str(ev.get("superficie")), superficie)):
