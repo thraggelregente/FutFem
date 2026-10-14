@@ -106,3 +106,7 @@ World Rugby está activo sin key para femenino XV (`WORLD_RUGBY_ACTIVO=0` lo des
 SportAPI.ai: guardar la key Free como `SPORTAPI_API_KEY` en Environment de Render y aplicar el deploy. Sin esa variable la fuente está desactivada. Cupo 2.000/día UTC, saldo real en `/health`, cachés y solo las competiciones femeninas positivas del catálogo. No pegar credenciales en archivos del repositorio. Ver comprobaciones y límites en PROVEEDORES.md.
 
 SportScore ya consulta fútbol, básquet femenino 5x5 y calendario de tenis individual real. Su límite 9.800/24 h móviles se comparte entre esos deportes. Mantiene WTA oficial para ranking/WC/perfiles, rechaza SRL/simulaciones, dobles y cruces con identidad/horario contradictorios. Cricket continúa pendiente de motor específico.
+
+## Observabilidad y evaluación prospectiva
+
+La revisión `radar-evaluation-v1` añade cobertura, diario inmutable, seguimiento de resultados, evaluador offline y planificación con comparación en sombra. Estado operativo, mapa de fuentes, límites y clave opcional `TENNIS_API_RAPIDAPI_KEY`: [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md).

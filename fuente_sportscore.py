@@ -124,6 +124,8 @@ def obtener_eventos(deporte):
             continue
         if len(rows) >= 200:
             U.log("[sportscore] página al límite: cobertura parcial, no representa todas las ligas")
+            import cobertura_radar
+            cobertura_radar.actual.truncado(FUENTE, deporte)
         for raw in rows:
             p = normalizar(raw, deporte=deporte)
             if p and p.get("tipo_estado") == "pre":
@@ -279,3 +281,21 @@ def contexto_estadistico(evento, historiales):
         promedios.append(sum(valores)/2)
     return [f"Contexto SportScore: tiros al arco por partido {promedios[0]:.1f} / {promedios[1]:.1f} "
             "(local/visitante, dos partidos recientes cada una); no suma puntaje independiente."]
+
+
+def resultados_evaluacion(evento):
+    from resultados_evaluacion import de_historial
+    deporte = evento.get('deporte')
+    if deporte not in ('Soccer', 'Basketball') or not disponible():
+        return []
+    if not any(o.get('fuente')==FUENTE for o in evento.get('_observaciones') or [evento]):
+        return []
+    dia = datetime.fromtimestamp(evento['startTimestamp'], timezone.utc).date().isoformat()
+    data = cliente.pedir(BASE + '/api/v1/fixtures/', {'sport': DEPORTES[deporte], 'date': dia, 'status': 'finished', 'limit': 200}, ttl=1800)
+    if not isinstance(data, dict) or data.get('date') != dia:
+        return []
+    rows = data.get('matches') or []
+    if len(rows) >= 200:
+        import cobertura_radar
+        cobertura_radar.actual.truncado(FUENTE, deporte)
+    return [r for raw in rows if (p := normalizar(raw, deporte=deporte)) and (r := de_historial(p, deporte, FUENTE))]

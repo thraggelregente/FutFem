@@ -272,3 +272,26 @@ def obtener_forma_reciente(nombre_equipo, deporte="Soccer", limite=8, id_interno
     partidos.sort(key=lambda p: p["fecha"], reverse=True)
     L.ingestar("Soccer", partidos, "openligadb")
     return partidos[:max(1, int(limite))]
+
+
+def resultados_evaluacion(evento):
+    from resultados_evaluacion import de_historial
+    refs=[o.get('liga_ref') for o in evento.get('_observaciones') or [evento] if o.get('fuente')==FUENTE and o.get('liga_ref')]
+    if evento.get('deporte')!='Soccer' or not refs:
+        return []
+    output=[]
+    for shortcut,season in set(tuple(ref) for ref in refs):
+        for match in _partidos_liga(shortcut,season) or []:
+            if not match.get('MatchIsFinished'):
+                continue
+            a,b=_equipo(match,'Team1'),_equipo(match,'Team2')
+            pl,pv=_resultado_final(match)
+            if not a or not b or pl is None or pv is None:
+                continue
+            row={'id':'openligadb_'+str(match.get('MatchID')), 'fecha':match.get('MatchDateTimeUTC'),
+                 'nom_local':a['nombre'],'nom_visita':b['nombre'],'puntos_local':pl,'puntos_visita':pv,
+                 'liga_ref':[shortcut,season],'season_ref':season,'_outcome_status':'normal'}
+            outcome=de_historial(row,'Soccer',FUENTE)
+            if outcome:
+                output.append(outcome)
+    return output

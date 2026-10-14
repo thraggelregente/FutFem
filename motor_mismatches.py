@@ -402,6 +402,7 @@ def evaluar_plantel(bajas_local, bajas_visita, deporte):
 
 def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
                      tabla_local_visita=None, datos_extra=None):
+    signals = []
     puntos = {LOCAL: 0, VISITA: 0}
     textos = {LOCAL: [], VISITA: []}
     grupos = {LOCAL: set(), VISITA: set()}
@@ -412,6 +413,7 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
     def sumar(lado, pts, texto, grupo="historial"):
         anterior = puntos_grupo[lado].get(grupo, 0)
         nuevo = min(limites_grupo.get(grupo, 4), anterior + pts)
+        signals.append({"side": lado, "family": grupo, "requested_points": pts, "effective_points": nuevo-anterior, "detail": texto})
         puntos[lado] += nuevo - anterior
         puntos_grupo[lado][grupo] = nuevo
         textos[lado].append(texto)
@@ -544,4 +546,5 @@ def evaluar_mismatch(deporte, perf_local, perf_visita, triangulaciones, h2h,
             "magnitud": "Fuerte" if puntaje >= 6 else "Moderada",
             "familias_senales": sorted(grupos[favorito]),
         })
+    resultado["signals"] = signals
     return resultado

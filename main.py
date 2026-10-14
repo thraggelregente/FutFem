@@ -3,9 +3,9 @@
 El sistema no consulta, almacena ni muestra cuotas, bookmakers ni probabilidades
 implícitas. Usa resultados recientes, rankings disponibles, H2H, tablas y calendario.
 
-Fuentes de calendario: Highlightly, API-Sports, OpenLigaDB, TheSportsDB,
-The Odds API (solo fixtures) y OddsPapi (solo fixtures). ESPN queda como respaldo de menor prioridad
-y como única fuente de ranking WTA para tenis.
+Calendarios y contexto femeninos de fuentes oficiales y proveedores configurados.
+El ranking principal es WTA oficial, con ESPN como respaldo de alcance limitado.
+La auditoría y evaluación prospectiva usan namespaces separados del historial anterior.
 """
 
 from __future__ import annotations
@@ -25,6 +25,11 @@ import requests
 
 import utilidades as U
 import mensajes
+import auditoria_decisiones as auditoria
+import cobertura_radar as cobertura
+import resultados_evaluacion as resultados
+import planificador_datos as planificador
+import mapa_fuentes
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +64,12 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "clear-alerts-v1",
+            "revision": "radar-evaluation-v1",
+            "coverage": ESTADO.get("coverage", {}),
+            "audit": ESTADO.get("audit", {}),
+            "outcome_evaluation": ESTADO.get("outcome_evaluation", {}),
+            "data_planner": ESTADO.get("data_planner", {}),
+            "source_capabilities": ESTADO.get("source_capabilities", {}),
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -164,6 +174,7 @@ motor_tenis = _importar("motor_tenis")
 motor_cricket = _importar("motor_cricket")
 fuente_cricsheet = _importar("fuente_cricsheet")
 fuente_balldontlie = _importar("fuente_balldontlie")
+fuente_tennis_api = _importar("fuente_tennis_api")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
     _ultimo_intento = {}
@@ -224,6 +235,7 @@ def _post_telegram(url: str, payload: dict[str, Any], destino: str):
 
 
 def enviar_telegram(mensaje_html: str) -> bool:
+    enviar_telegram.ultima_entrega = {}
     if not TELEGRAM_TOKEN:
         U.log("[telegram] falta TELEGRAM_TOKEN; mensaje no enviado")
         return False
@@ -239,6 +251,7 @@ def enviar_telegram(mensaje_html: str) -> bool:
         U.log("[telegram] formato inválido; no se envía una alerta incompleta")
         return False
     entregado = False
+    enviar_telegram.ultima_entrega = {}
     for destino in destinos:
         entregado_destino = True
         for parte in partes:
@@ -267,6 +280,9 @@ def enviar_telegram(mensaje_html: str) -> bool:
             if not parte_ok:
                 entregado_destino = False
                 break
+        role = "personal" if destino == CHAT_ID else "group"
+        enviar_telegram.ultima_entrega[role] = entregado_destino
+        cobertura.actual.entrega(role, entregado_destino)
         entregado = entregado or entregado_destino
     return entregado
 
@@ -582,11 +598,24 @@ def _tabla_evento(ev):
     return (tabla, cantidad) if len(tabla) == 2 else (None, 0)
 
 
+def _decision(ev, state, reason, inputs=None, result=None, delivery=None):
+    key = _clave_canonica_evento(ev) or auditoria.digest([ev.get('fuente'), ev.get('id'), ev.get('torneo')])
+    cobertura.actual.decision(key, state, reason, result)
+    sid = auditoria.registrar(ev, key, state, reason, inputs, result, delivery)
+    if inputs is not None and result is not None:
+        try:
+            resultados.actual().seguir(ev, key, sid, state, result)
+        except Exception as exc:
+            U.log("[outcomes] seguimiento omitido: " + type(exc).__name__)
+    return sid
+
+
 def _procesar_evento(ev, st, ahora_ts):
     clave = _clave_canonica_evento(ev)
     if not clave:
         st["errores"] += 1
         U.log("[radar] evento ignorado: no tiene clave de deduplicación")
+        _decision(ev, "discard", "missing_identity")
         return False
 
     nom_loc = str((ev.get("local") or {}).get("nombre") or "").strip()
@@ -597,29 +626,41 @@ def _procesar_evento(ev, st, ahora_ts):
     femenino = bool(ev.get("femenino_seguro")) or U.es_femenino(torneo, nom_loc, nom_vis)
     if not femenino:
         U.log(f"[filtro] rechazo por falta de evidencia femenina: {torneo} | {nom_loc} vs {nom_vis}")
+        _decision(ev, "discard", "gender_unverified")
         return False
     st["femeninos"] += 1
     if not U.participante_definido(nom_loc) or not U.participante_definido(nom_vis) or U.firma_equipo(nom_loc) == U.firma_equipo(nom_vis):
         st["sin_datos"] += 1
+        _decision(ev,"unevaluable","undefined_participant")
         return False
 
     if not _fecha_evento_valida(ev, ahora_ts, st):
+        _decision(ev,"pending","outside_pre_match_window")
         return False
 
     if _ya_alertado(ev):
         st["ya_vistos"] += 1
+        _decision(ev,"pending","already_delivered")
         return False
 
     if deporte == "Cricket":
         # No pasar runs/wickets por el motor de diferencias de goles/puntos.
         if not motor_cricket or not fuente_cricsheet:
             st["sin_datos"] += 1
+            _decision(ev,"unevaluable","missing_cricket_module")
             return False
-        resultado_c = motor_cricket.evaluar(ev, fuente_cricsheet.historial(ev), ahora_ts)
+        registros_c = fuente_cricsheet.historial(ev)
+        inputs_c = {"registros": registros_c, "evaluation_at_utc": ahora_ts}
+        resultado_c = motor_cricket.evaluar(ev, registros_c, ahora_ts)
+        _decision(ev, "alert" if resultado_c["alertar"] else "discard", resultado_c.get("motivo", "threshold"), inputs_c, resultado_c)
         st["analizados"] += 1
         if resultado_c["alertar"]:
+            if time.time() >= ev["startTimestamp"]:
+                _decision(ev, "discard", "started_during_evaluation", inputs_c, resultado_c)
+                return True
             if fuente_sportscore and not fuente_sportscore.permite_alerta(ev):
                 U.log("[cricket] detalle del mismo partido contradice el calendario; alerta omitida")
+                _decision(ev, "discard", "provider_contradiction", inputs_c, resultado_c)
                 return True
             entregado = enviar_alerta(deporte, torneo, nom_loc, nom_vis,
                 str(ev.get("horario") or "A confirmar"), resultado_c["evidencia"], resultado_c["favorito"],
@@ -627,6 +668,7 @@ def _procesar_evento(ev, st, ahora_ts):
                 fuentes=list(ev.get("_fuentes_detectadas") or [ev.get("fuente")]) + resultado_c["fuentes"],
                 tipo="CANDIDATO CRICKET — EXPERIMENTAL")
             st["alertas"] += 1
+            _decision(ev, "alert", "threshold_met", inputs_c, resultado_c, {"any_complete": entregado, "roles": getattr(enviar_telegram, "ultima_entrega", {})})
             if entregado:
                 registro.marcar(clave)
         else:
@@ -637,20 +679,27 @@ def _procesar_evento(ev, st, ahora_ts):
         local, visita = ev.get("local") or {}, ev.get("visita") or {}
         if not motor_tenis:
             st["sin_datos"] += 1
+            _decision(ev,"unevaluable","missing_tennis_module")
             return False
         # El ranking selecciona candidatos; WC puede abrir la evaluación de experiencia.
         base = motor_mismatches.evaluar_mismatch_tenis(nom_loc, nom_vis, local.get("ranking"), visita.get("ranking"))
         wc = any(j.get("entry") == "WC" and j.get("entry_fuente") == "WTA cuadro oficial" for j in (local, visita))
         if not base[0] and not wc:
+            _decision(ev, "discard", "tennis_candidate_filter", {}, {"puntaje":0})
             st["analizados"] += 1
             return True
         perfiles = {}
         if fuente_wta:
             for lado, j in ((motor_mismatches.LOCAL, local), (motor_mismatches.VISITA, visita)):
                 perfiles[lado] = fuente_wta.perfil(j)
-        resultado_t = motor_tenis.evaluar(ev, perfiles)
+        inputs_t = {"perfiles": perfiles, "evaluation_at_utc": ahora_ts}
+        resultado_t = motor_tenis.evaluar(ev, perfiles, ahora=ahora_ts)
+        _decision(ev, "alert" if resultado_t["alertar"] else "discard", resultado_t.get("motivo", "threshold_met"), inputs_t, resultado_t)
         st["analizados"] += 1
         if resultado_t["alertar"]:
+            if time.time() >= ev["startTimestamp"]:
+                _decision(ev, "discard", "started_during_evaluation", inputs_t, resultado_t)
+                return True
             entregado = enviar_alerta(deporte, torneo, nom_loc, nom_vis,
                 str(ev.get("horario") or "A confirmar"), resultado_t["evidencia"], resultado_t["favorito"],
                 f"Magnitud: {'fuerte' if resultado_t['puntaje'] >= 4 else 'moderada'}; calidad: {resultado_t['calidad']}",
@@ -658,6 +707,7 @@ def _procesar_evento(ev, st, ahora_ts):
                         list({j.get("ranking_fuente") for j in (local, visita) if j.get("ranking_fuente")}),
                 tipo=resultado_t["tipo"])
             st["alertas"] += 1
+            _decision(ev, "alert", "threshold_met", inputs_t, resultado_t, {"any_complete": entregado, "roles": getattr(enviar_telegram, "ultima_entrega", {})})
             if entregado:
                 registro.marcar(clave)
         else:
@@ -708,30 +758,27 @@ def _procesar_evento(ev, st, ahora_ts):
             U.log(f"[elo] {type(exc).__name__} para {ev.get('id')}")
     datos_extra["plantel"] = _evaluar_plantel(ev, deporte, nom_loc, nom_vis)
 
-    def evaluar(tabla_eval):
-        return motor_mismatches.evaluar_mismatch(
-            deporte=deporte,
-            perf_local=perf_loc,
-            perf_visita=perf_vis,
-            triangulaciones=triangs,
-            h2h=h2h,
-            tabla_local_visita=tabla_eval,
-            datos_extra=datos_extra,
-        )
-
     tabla, cantidad_equipos = _tabla_evento(ev)
-
-    resultado = evaluar(
-        motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis, cantidad_equipos) if tabla else None
-    )
+    motor_kwargs = dict(deporte=deporte, perf_local=perf_loc, perf_visita=perf_vis,
+                        triangulaciones=triangs, h2h=h2h,
+                        tabla_local_visita=motor_mismatches.evaluar_tabla_posiciones(tabla, id_loc, id_vis, cantidad_equipos) if tabla else None,
+                        datos_extra=datos_extra)
+    inputs_e = {"motor_kwargs": motor_kwargs, "forma_local": forma_loc, "forma_visita": forma_vis,
+                "h2h": h2h_raw, "tabla": tabla, "inputs_observed_at_utc": ahora_ts}
+    resultado = motor_mismatches.evaluar_mismatch(**motor_kwargs)
+    _decision(ev, "alert" if resultado["hay_mismatch"] else "discard", resultado.get("motivo_descarte") or "threshold_met", inputs_e, resultado)
 
     if resultado["hay_mismatch"]:
+        if time.time() >= ev["startTimestamp"]:
+            _decision(ev, "discard", "started_during_evaluation", inputs_e, resultado)
+            return True
         favorito = resultado["favorito"]
         contexto, fuentes_alerta = [], list(ev.get("_fuentes_detectadas") or [ev.get("fuente")])
         obs_ss = next((o for o in ev.get("_observaciones") or [ev] if o.get("fuente") == "sportscore"), None)
         if obs_ss and fuente_sportscore:
             if not fuente_sportscore.permite_alerta(obs_ss):
                 U.log("[sportscore] detalle del mismo partido contradice el calendario; alerta omitida")
+                _decision(ev, "discard", "provider_contradiction", inputs_e, resultado)
                 return True
             contexto = fuente_sportscore.contexto_alerta(obs_ss)
             if ev.get("fuente") == "sportscore":
@@ -752,6 +799,7 @@ def _procesar_evento(ev, st, ahora_ts):
             tipo="ASIMETRÍA EXPERIMENTAL" if deporte in DEPORTES_SIN_CUPO_COMERCIAL else "MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA",
         )
         st["alertas"] += 1
+        _decision(ev, "alert", "threshold_met", inputs_e, resultado, {"any_complete": entregado, "roles": getattr(enviar_telegram, "ultima_entrega", {})})
         if entregado:
             registro.marcar(clave)
     elif resultado.get("puntaje", 0) > 0:
@@ -764,6 +812,7 @@ def _procesar_evento(ev, st, ahora_ts):
 # Agregación multi-fuente
 # ---------------------------------------------------------------------------
 _PRIORIDAD_FUENTE = {
+    "tennis_api": 4,
     "balldontlie": 3,
     "sportapi": 4,
     "worldrugby": -2,
@@ -812,6 +861,7 @@ def _coincide_con_candidato(candidato, firma, inicio, observacion=None):
 
 def _recolectar_eventos(resumen):
     fuentes = [
+        (fuente_tennis_api, "tennis_api"),
         (fuente_cev, "cev"),
         (fuente_fivb, "fivb"),
         (fuente_bbs, "bbs"),
@@ -849,10 +899,15 @@ def _recolectar_eventos(resumen):
                 continue  # calendario nuevo sin consumir cuotas comerciales
             if deporte in DEPORTES_SIN_CUPO_COMERCIAL and nombre != "espn":
                 continue  # los nuevos deportes nunca consultan planes comerciales
+            if not planificador.actual.permitido(nombre):
+                cobertura.actual.consulta(nombre, deporte, 0, "provider_paused")
+                continue
             try:
                 eventos = modulo.obtener_eventos(deporte) or []
+                cobertura.actual.consulta(nombre, deporte, len(eventos))
             except Exception as exc:
                 U.log(f"[{nombre}] error listando {deporte}: {type(exc).__name__}: {exc}")
+                cobertura.actual.consulta(nombre, deporte, 0, type(exc).__name__)
                 continue
 
             st = resumen.setdefault(f"{nombre}:{deporte}", _nuevo_stat())
@@ -979,6 +1034,8 @@ def _avisar_si_esta_ciego(resumen):
 
 def ejecutar_barrido_radar():
     U.reiniciar_estadisticas()
+    cobertura.iniciar()
+    planificador.actual.iniciar()
     U.log("=== Barrido de asimetrías deportivas femeninas ===")
     if motor_mismatches is None:
         U.log("[fatal] motor_mismatches no está disponible; se omite este barrido")
@@ -992,37 +1049,52 @@ def ejecutar_barrido_radar():
         fuente_wta.iniciar_ciclo()
     eventos = _recolectar_eventos(resumen)
     # Los pendientes nunca procesados van primero; luego rota por último intento.
-    eventos.sort(key=lambda ev: (_ultimo_intento.get(_clave_canonica_evento(ev), 0), ev.get("startTimestamp", 0)))
+    eventos = planificador.actual.ordenar_eventos(eventos, _ultimo_intento, _clave_canonica_evento, ahora_ts)
+    for ev in eventos:
+        cobertura.actual.evento(_clave_canonica_evento(ev), ev)
 
+    tareas = [{"key": _clave_canonica_evento(ev), "source": ev.get('fuente','unknown'),
+               "deadline":ev.get('startTimestamp',ahora_ts), "missing":not _tiene_historial_propio(ev),
+               "new_coverage":not _ultimo_intento.get(_clave_canonica_evento(ev)), "cost":1} for ev in eventos]
+    saldos = {source:int(row.get('disponibles_bot',0)) for source,row in ESTADO.get('presupuestos',{}).items()}
+    planificador.actual.seleccionar(tareas, saldos, ahora_ts, MAX_ANALISIS_POR_CICLO)
     intentos = 0
     busquedas_por_nombre = 0
     omitidos_busqueda = 0
-    for ev in eventos:
+    for posicion, ev in enumerate(eventos):
         if intentos >= MAX_ANALISIS_POR_CICLO:
             U.log(f"[radar] alcanzado el límite de {MAX_ANALISIS_POR_CICLO} eventos por ciclo")
+            for pendiente in eventos[posicion:]:
+                _decision(pendiente, "pending", "analysis_queue")
             break
         st = resumen.setdefault(f"{ev.get('fuente', 'ext')}:{ev.get('deporte', 'Multi')}", _nuevo_stat())
         clave_ev = _clave_canonica_evento(ev)
         if _en_enfriamiento(clave_ev, ahora_ts):
             st["enfriados"] += 1
+            _decision(ev, "pending", "cooldown")
             continue
         # Filtros baratos antes de gastar cupo. Tenis sin ranking no ocupa intentos.
         if not _fecha_evento_valida(ev, ahora_ts, st):
+            _decision(ev, "pending" if not ev.get("startTimestamp") or ev.get("startTimestamp",0)>ahora_ts else "discard", "outside_pre_match_window")
             continue
         if _ya_alertado(ev):
             st["ya_vistos"] += 1
+            _decision(ev, "pending", "already_delivered")
             continue
         if not all(U.participante_definido((ev.get(lado) or {}).get("nombre")) for lado in ("local", "visita")):
             st["sin_datos"] += 1
+            _decision(ev, "unevaluable", "undefined_participant")
             continue
         if (ev.get("deporte") == "Tennis"
                 and not all((ev.get(lado) or {}).get("ranking") for lado in ("local", "visita"))
                 and not any((ev.get(lado) or {}).get("entry") == "WC" and (ev.get(lado) or {}).get("entry_fuente") == "WTA cuadro oficial" for lado in ("local", "visita"))):
             st["sin_datos"] += 1
+            _decision(ev, "unevaluable", "tennis_missing_ranking_and_official_wc")
             continue
         if not _tiene_historial_propio(ev):
             if busquedas_por_nombre >= MAX_BUSQUEDAS_POR_NOMBRE:
                 omitidos_busqueda += 1
+                _decision(ev, "pending", "identity_lookup_budget")
                 continue
             busquedas_por_nombre += 1
         intentos += 1
@@ -1037,6 +1109,7 @@ def ejecutar_barrido_radar():
         except Exception as exc:
             st["errores"] += 1
             U.log(f"[radar] error en evento {ev.get('id', '?')}: {type(exc).__name__}: {exc}")
+            _decision(ev, "pending", "evaluation_error:" + type(exc).__name__)
         registro.guardar()
 
     registro.guardar()
@@ -1055,15 +1128,49 @@ def ejecutar_barrido_radar():
     ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
     ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())
     U.guardar_caches((fuente_api_football, fuente_highlightly, fuente_thesportsdb, fuente_theoddsapi,
-                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie))
+                      fuente_openligadb, fuente_espn, fuente_wta, fuente_pwhl, fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie, fuente_tennis_api))
     ESTADO["presupuestos"] = _resumen_presupuestos()
     ESTADO["http_last_sweep"] = {fuente: dict(codigos) for fuente, codigos in U.ESTADISTICAS.items()}
     ESTADO["barridos"] += 1
     ESTADO["ultimo_barrido_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ESTADO["ultimo_barrido_segundos"] = round(time.monotonic() - t_inicio, 1)
     ESTADO["eventos_unicos"] = len(eventos)
+    try:
+        modules = {name[7:]: value for name, value in globals().items() if name.startswith('fuente_')}
+        resultados.actual().recoger(modules)
+        resultados.actual().guardar()
+        auditoria.diario().flush()
+        ESTADO['ultimo_barrido_segundos'] = round(time.monotonic()-t_inicio,1)
+        ESTADO['http_last_sweep'] = {fuente:dict(codigos) for fuente,codigos in U.ESTADISTICAS.items()}
+        ESTADO['presupuestos'] = _resumen_presupuestos()
+        ESTADO['coverage'] = cobertura.actual.resumen()
+        ESTADO['audit'] = auditoria.diario().estado()
+        ESTADO['outcome_evaluation'] = resultados.actual().estado()
+        ESTADO['data_planner'] = planificador.actual.resumen()
+        ESTADO['source_capabilities'] = mapa_fuentes.construir(modules, ESPN_ACTIVO)
+        _guardar_cobertura_diaria(ESTADO['coverage'])
+    except Exception as exc:
+        U.log('[observability] barrido deportivo conservado; ' + type(exc).__name__)
     _imprimir_resumen(resumen)
     _avisar_si_esta_ciego(resumen)
+
+
+def _guardar_cobertura_diaria(report):
+    dias = U.cargar_json('cobertura_diaria_v1.json', {})
+    if not isinstance(dias, dict):
+        dias = {}
+    dia = datetime.now(timezone.utc).date().isoformat()
+    row = dias.setdefault(dia, {'sweeps':0, 'sports':{}, 'http_requests':0, 'delivery_counts':{}})
+    row['sweeps'] += 1
+    row['http_requests'] += planificador.actual.resumen()['http_requests']
+    for sport, data in report['sports'].items():
+        old = row['sports'].setdefault(sport, {'max_unique_per_sweep':0, 'sources_observed':[], 'evaluations':0})
+        old['max_unique_per_sweep'] = max(old['max_unique_per_sweep'], data['unique_events'])
+        old['sources_observed'] = sorted(set(old['sources_observed']) | set(data['sources_observed']))
+        old['evaluations'] += sum(n for label,n in data['states'].items() if label.startswith(('alert:', 'discard:')))
+    for label, n in report['deliveries_by_role'].items():
+        row['delivery_counts'][label] = row['delivery_counts'].get(label,0)+n
+    U.guardar_json('cobertura_diaria_v1.json', dict(sorted(dias.items())[-35:]))
 
 
 def _resumen_presupuestos():
@@ -1083,7 +1190,7 @@ def _resumen_presupuestos():
     if fuente_pwhl and fuente_pwhl.disponible():
         p = fuente_pwhl.presupuesto
         salida["pwhl"] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes()}
-    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie):
+    for modulo in (fuente_fivb, fuente_cev, fuente_bbs, fuente_sportscore, fuente_worldrugby, fuente_sportapi, fuente_cricsheet, fuente_balldontlie, fuente_tennis_api):
         if modulo and modulo.disponible():
             p = modulo.presupuesto
             salida[modulo.FUENTE] = {"usadas": p.usadas, "limite": p.limite, "disponibles_bot": p.restantes(),
@@ -1096,7 +1203,7 @@ def _resumen_presupuestos():
 
 def _fuentes_activas():
     fuentes = []
-    for modulo, nombre in ((fuente_fivb, "FIVB/VIS"), (fuente_cev, "CEV"), (fuente_bbs, "Big Balls Sports Data (WNBA)"),
+    for modulo, nombre in ((fuente_tennis_api, "Tennis API (factual femenino)"), (fuente_fivb, "FIVB/VIS"), (fuente_cev, "CEV"), (fuente_bbs, "Big Balls Sports Data (WNBA)"),
                            (fuente_sportscore, "SportScore"), (fuente_worldrugby, "World Rugby (femenino XV)"), (fuente_sportapi, "SportAPI.ai"),
                            (fuente_cricsheet, "Cricsheet (resultados femeninos)"), (fuente_balldontlie, "BALLDONTLIE (WNBA)")):
         if modulo and modulo.disponible():

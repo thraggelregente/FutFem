@@ -65,14 +65,15 @@ class Cliente:
         hit, dato = self.cache.get(clave)
         if hit:
             return dato
-        if time.time() < self.pausa or not self.presupuesto.puede_gastar():
+        import planificador_datos
+        if not planificador_datos.actual.permitido(self.nombre) or time.time() < self.pausa or not self.presupuesto.puede_gastar():
             return None
         self.ritmo.esperar()
         self.presupuesto.registrar()
         try:
             r = requests.get(url, params=params, timeout=25)
             U._registrar(self.nombre, r.status_code)
-            if r.status_code in (403, 429):
+            if r.status_code in (401, 403, 429):
                 self.pausa = time.time() + 6 * 3600
             r.raise_for_status()
             if len(r.content) > 8_000_000:

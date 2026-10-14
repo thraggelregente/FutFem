@@ -55,7 +55,7 @@ def normalizar(nodo, ahora=None):
             or not scores or max(scores) != 3 or min(scores) not in (0, 1, 2)
             or raw.get("ResultType") != "0"):
         return None
-    return dict(comunes, fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"],
+    return dict(comunes, id="fivb_" + raw["No"], _outcome_status="normal", fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"],
                 id_visita=comunes["visita"]["id"], nom_local=na + sufijo, nom_visita=nb + sufijo,
                 puntos_local=scores[0], puntos_visita=scores[1])
 
@@ -85,3 +85,11 @@ def historial_equipo(evento, lado):
     contexto = evento.get("contexto_competicion")
     return sorted((p for p in _historial if p.get("contexto_competicion") == contexto and
                    tid in (p["id_local"], p["id_visita"])), key=lambda p: p["fecha"], reverse=True)[:10]
+
+
+def resultados_evaluacion(evento):
+    """Reutiliza el listado verificado cargado por el calendario."""
+    if evento.get("deporte") != 'Volleyball':
+        return []
+    from resultados_evaluacion import de_historial
+    return [r for p in _historial if (r := de_historial(p, 'Volleyball', FUENTE))]

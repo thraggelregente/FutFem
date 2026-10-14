@@ -1,6 +1,6 @@
 # Investigación y especificación de las cinco mejoras
 
-Fecha: 14/10/2026. Estado: **propuesta lista para desarrollo; no implementada**. Esta revisión sólo despliega mejoras de presentación/entrega de mensajes. No activa auditoría, recopilación posterior de resultados, calibración, reparto nuevo de cuota ni recomendaciones de apuestas.
+Fecha: 14/10/2026. Estado histórico: **propuesta original previa a implementación**. La implementación autorizada posterior y sus límites actuales están en [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md). Esta revisión sólo despliega mejoras de presentación/entrega de mensajes. No activa auditoría, recopilación posterior de resultados, calibración, reparto nuevo de cuota ni recomendaciones de apuestas.
 
 ## Hallazgos del proyecto actual
 

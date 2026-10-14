@@ -85,7 +85,7 @@ def normalizar(raw, year, ahora=None):
     if (raw.get("status") != "finished" or not ahora - 90 * 86400 <= ts < ahora
             or not scores or min(scores) < 0 or scores[0] == scores[1]):
         return None
-    return dict(comunes, fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"], id_visita=comunes["visita"]["id"],
+    return dict(comunes, id='bbs_' + str(raw['id']), _outcome_status="normal", fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"], id_visita=comunes["visita"]["id"],
                 nom_local=a["name"], nom_visita=b["name"], puntos_local=scores[0], puntos_visita=scores[1])
 
 
@@ -117,3 +117,10 @@ def historial_equipo(evento, lado):
     contexto = evento.get("contexto_competicion")
     return sorted((p for p in _historial if p.get("contexto_competicion") == contexto and
                    tid in (p["id_local"], p["id_visita"])), key=lambda p: p["fecha"], reverse=True)[:10]
+
+
+def resultados_evaluacion(evento):
+    if evento.get("deporte") != "Basketball":
+        return []
+    from resultados_evaluacion import de_historial
+    return [r for p in _historial if (r := de_historial(p, "Basketball", FUENTE))]

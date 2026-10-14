@@ -180,3 +180,15 @@ def historial(evento):
 def estado():
     registros = {p["id"]: p for k in _claves_archivos() for p in (_cache.get(k)[1] or [])}
     return {"resultados_indexados": len(registros), "actualizando": bool(_worker and _worker.is_alive())}
+
+
+def resultados_evaluacion(evento):
+    if evento.get('deporte') != 'Cricket':
+        return []
+    return [{'sport':'Cricket', 'source':FUENTE, 'provider_id':p['id'],
+             'competition_id':p['competicion'], 'season':p['temporada'], 'format':p['formato'],
+             'category':'women_age_unknown', 'participants':p['equipos'], 'winner':p['ganadora'],
+             'kickoff_utc':datetime.strptime(p['fecha'], '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp(),
+             'kickoff_precision':'date', 'score':None, 'status':'normal', 'margin':p['margen'],
+             'margin_unit':p['unidad'], 'original_score':{'by':{p['unidad']:p['margen']}},
+             'verified_at':time.time()} for p in historial(evento)]

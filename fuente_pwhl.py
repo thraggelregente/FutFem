@@ -141,7 +141,7 @@ def obtener_eventos(deporte):
         estado = fila.get("game_status", "").lower()
         if estado.startswith("final") and ts < now:
             try:
-                hist.append({"fecha": U.ts_a_iso_utc(ts), "id_local": "pwhl:" + il, "id_visita": "pwhl:" + iv,
+                hist.append({"id": "pwhl_" + str(fila["game_id"]), "_outcome_status": "overtime" if "ot" in estado or "so" in estado else "normal", "fecha": U.ts_a_iso_utc(ts), "id_local": "pwhl:" + il, "id_visita": "pwhl:" + iv,
                              "nom_local": teams[il], "nom_visita": teams[iv],
                              "puntos_local": int(fila["home_goal_count"]), "puntos_visita": int(fila["visiting_goal_count"])})
             except (KeyError, ValueError):
@@ -161,3 +161,11 @@ def historial_equipo(evento, lado):
     pid = str((evento.get(lado) or {}).get("id"))
     return sorted((p for p in _historial if pid in (p["id_local"], p["id_visita"])),
                   key=lambda p: p["fecha"], reverse=True)[:10]
+
+
+def resultados_evaluacion(evento):
+    """Reutiliza el listado verificado cargado por el calendario."""
+    if evento.get("deporte") != 'Ice Hockey':
+        return []
+    from resultados_evaluacion import de_historial
+    return [r for p in _historial if (r := de_historial(p, 'Ice Hockey', FUENTE))]
