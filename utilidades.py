@@ -631,6 +631,17 @@ class PresupuestoMultiple:
             return (f"hoy {self.d}/{tope_d}, semana {self.s}/{self.semanal}, "
                     f"mes {self.m}/{self.mensual - self.reserva}")
 
+    def resumen_datos(self):
+        """Contrato numérico para planificación; conserva el resumen legible."""
+        with self._lock:
+            self._rotar()
+            return {"disponibles_bot": self.permitido_ahora(), "resumen": self.resumen(),
+                    "ventana": "día/semana ISO/mes UTC",
+                    "dia": {"usadas": self.d, "limite": self.diario},
+                    "semana": {"usadas": self.s, "limite": self.semanal},
+                    "mes": {"usadas": self.m, "limite": self.mensual,
+                            "reserva": self.reserva}}
+
 
 # ---------------------------------------------------------------------------
 # NOMBRES

@@ -64,7 +64,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "tennis-volley-context-v1",
+            "revision": "tennis-volley-context-v1-budget-fix",
             "coverage": ESTADO.get("coverage", {}),
             "audit": ESTADO.get("audit", {}),
             "outcome_evaluation": ESTADO.get("outcome_evaluation", {}),
@@ -1093,7 +1093,7 @@ def ejecutar_barrido_radar():
     tareas = [{"key": _clave_canonica_evento(ev), "source": ev.get('fuente','unknown'),
                "deadline":ev.get('startTimestamp',ahora_ts), "missing":not _tiene_historial_propio(ev),
                "new_coverage":not _ultimo_intento.get(_clave_canonica_evento(ev)), "cost":1} for ev in eventos]
-    saldos = {source:int(row.get('disponibles_bot',0)) for source,row in ESTADO.get('presupuestos',{}).items()}
+    saldos = planificador.saldos_disponibles(ESTADO.get('presupuestos', {}))
     planificador.actual.seleccionar(tareas, saldos, ahora_ts, MAX_ANALISIS_POR_CICLO)
     intentos = 0
     busquedas_por_nombre = 0
@@ -1222,7 +1222,7 @@ def _resumen_presupuestos():
             U.log(f"[presupuesto/{modulo.FUENTE}/{nombre}] {fila}")
     for modulo in (fuente_oddspapi, fuente_theoddsapi, fuente_wta):
         if modulo and modulo.disponible():
-            salida[modulo.FUENTE] = modulo.presupuesto.resumen()
+            salida[modulo.FUENTE] = modulo.presupuesto.resumen_datos()
             U.log(f"[presupuesto/{modulo.FUENTE}] {salida[modulo.FUENTE]}")
     if fuente_pwhl and fuente_pwhl.disponible():
         p = fuente_pwhl.presupuesto

@@ -144,10 +144,24 @@ class RadarTests(unittest.TestCase):
              patch.object(B, "_ya_alertado", return_value=False), patch.object(B, "_enfriamiento", {}), \
              patch.object(B, "_ultimo_intento", {}), patch.object(B, "MAX_ANALISIS_POR_CICLO", 2), \
              patch.object(B, "_imprimir_resumen"), patch.object(B, "_avisar_si_esta_ciego"), \
-             patch.object(B, "_resumen_presupuestos", return_value={}):
+             patch.object(B, "_resumen_presupuestos", return_value={"wta": "hoy 51/100, semana 195/650, mes 195/2900"}):
             B.ejecutar_barrido_radar()
             B.ejecutar_barrido_radar()
         self.assertEqual(set(procesados), {"Util" + str(i) for i in range(4)})
+
+    def test_presupuesto_multiple_contrato_numerico_y_texto_legacy(self):
+        with patch.object(U, "cargar_json", return_value={}):
+            p = U.PresupuestoMultiple("test_contrato", mensual=150, semanal=34, diario=6)
+        p.d, p.s, p.m = 1, 3, 5
+        row = p.resumen_datos()
+        self.assertEqual(row["disponibles_bot"], p.permitido_ahora())
+        self.assertEqual(row["dia"]["usadas"], 1)
+        self.assertEqual(row["semana"]["usadas"], 3)
+        self.assertEqual(row["mes"]["usadas"], 5)
+        self.assertEqual(row["resumen"], p.resumen())
+        saldos = B.planificador.saldos_disponibles({"wta": row, "legacy": p.resumen(),
+                                                   "invalid": {"disponibles_bot": None}})
+        self.assertEqual(saldos, {"wta": p.permitido_ahora(), "invalid": 0})
 
 
 if __name__ == "__main__":
