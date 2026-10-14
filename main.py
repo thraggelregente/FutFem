@@ -59,7 +59,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "repo-cleanup-v1",
+            "revision": "clear-alerts-v1",
             "status": estado_salud(),
             "analysis_last_sweep": ESTADO["analizados"],
             "budgets": ESTADO["presupuestos"],
@@ -206,14 +206,6 @@ def _sin_html(texto: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", texto))
 
 
-def _recortar_html(texto: str, limite: int = 4000) -> str:
-    if len(texto) <= limite:
-        return texto
-    corte = texto[:limite]
-    ultimo_salto = corte.rfind("\n")
-    return (corte[:ultimo_salto] if ultimo_salto > 0 else corte) + "\n…"
-
-
 def _post_telegram(url: str, payload: dict[str, Any], destino: str):
     try:
         headers = {"Content-Type": "application/json; charset=utf-8"}
@@ -241,30 +233,39 @@ def enviar_telegram(mensaje_html: str) -> bool:
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    mensaje_html = _recortar_html(mensaje_html)
+    try:
+        partes = mensajes.dividir_html(mensaje_html)
+    except ValueError:
+        U.log("[telegram] formato inválido; no se envía una alerta incompleta")
+        return False
     entregado = False
     for destino in destinos:
-        entregado_destino = False
-        for modo in ("HTML", None):
-            payload = {
-                "chat_id": destino,
-                "disable_web_page_preview": True,
-                "text": mensaje_html if modo else _sin_html(mensaje_html),
-            }
-            if modo:
-                payload["parse_mode"] = modo
-            status = None
-            for _intento in range(3):
-                status, espera = _post_telegram(url, payload, destino)
-                if status == 429:
-                    time.sleep(min(max(espera, 1), 30))
-                    continue
-                break
-            if status == 200:
-                entregado_destino = True
-                break
-            U.log(f"[telegram] HTTP {status} para chat {destino}; modo={modo}")
-            if status != 400:
+        entregado_destino = True
+        for parte in partes:
+            parte_ok = False
+            for modo in ("HTML", None):
+                payload = {
+                    "chat_id": destino,
+                    "disable_web_page_preview": True,
+                    "text": parte if modo else _sin_html(parte),
+                }
+                if modo:
+                    payload["parse_mode"] = modo
+                status = None
+                for _intento in range(3):
+                    status, espera = _post_telegram(url, payload, destino)
+                    if status == 429:
+                        time.sleep(min(max(espera, 1), 30))
+                        continue
+                    break
+                if status == 200:
+                    parte_ok = True
+                    break
+                U.log(f"[telegram] HTTP {status} para chat {destino}; modo={modo}")
+                if status != 400:
+                    break
+            if not parte_ok:
+                entregado_destino = False
                 break
         entregado = entregado or entregado_destino
     return entregado

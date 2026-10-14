@@ -1,5 +1,9 @@
 # Radar de asimetrías deportivas femeninas — despliegue
 
+Mensajes del 14/10/2026: separan magnitud y respaldo de los datos, identifican los nombres en muestras/márgenes/Elo y explican resultados frente a rivales comunes, calendario, forma, H2H y rachas. Conservan todas las evidencias; una alerta larga se envía en partes con HTML balanceado y sólo se considera entregada si un destino recibe todas las partes. La sección **Recomendaciones** queda pendiente de evaluación, sin picks ni mercados automáticos. No cambia el puntaje ni los umbrales del motor.
+
+La investigación de las cinco mejoras siguientes está en [PLAN_MEJORAS.md](PLAN_MEJORAS.md), como especificación **no implementada**. Incluye requisitos, costes, pruebas de aceptación y la fuente opcional Tennis API Free a validar con suscripción.
+
 Ampliación 13/10/2026: cricket femenino T20/ODI es el 11.º deporte, con calendario SportScore e historial Cricsheet sin clave (`CRICSHEET_ACTIVO=0` permite desactivarlo). Alertas experimentales sólo con historial reciente suficiente; no usa cuotas de los demás proveedores. Archivos Cricsheet dinámicos por año, caché 24 h, hasta cuatro descargas/día. SportScore añade H2H fechados y contexto verificado de alineaciones/tiros al arco, dentro del presupuesto compartido existente. No se usan tablas/cuadros/goleadoras sin temporada o fecha verificable.
 
 Conector opcional nuevo **BALLDONTLIE WNBA**: crear una cuenta Free en https://app.balldontlie.io/ y guardar su clave en Render como `BALLDONTLIE_API_KEY`. No pegar claves en GitHub ni en mensajes. No activar prueba de pago: el conector sólo consulta games WNBA gratis. NCAAW games requiere plan pago y no está integrado. Respeta cinco requests/min; el tope operativo local 1.000/día no representa una cuota publicada por el proveedor. Sin la variable, no hace pedidos. La validación autenticada se realiza tras agregar la clave.
@@ -83,7 +87,7 @@ Los límites, restricciones de planes y comprobaciones públicas están en [PROV
 
 ## Validación
 
-Ejecutar `python -m unittest discover -v` (86 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud, rotación de la cola, fuentes públicas y el motor separado de cricket.
+Ejecutar `python -m unittest discover -v` (94 pruebas offline). Las pruebas no requieren claves ni envían Telegram. Cubren la alerta Brynäs/MODO con las señales de la captura previa (sin usar el resultado final), presupuestos por suscripción, ranking desconocido, alias, datos antiguos/ajenos/futuros, caché de ranking, salud, rotación de la cola, fuentes públicas, el motor separado de cricket y claridad/entrega íntegra de mensajes.
 
 Se verificó además el parser con el PDF oficial del 12/10/2026: 1.545 entradas, puesto máximo 1.504 y alias McNally resuelto. Esto valida el formato actual, no la estabilidad futura ni la precisión predictiva. No se probaron llamadas con las claves privadas; el despliegue anterior se verificó mediante su endpoint de salud.
 
