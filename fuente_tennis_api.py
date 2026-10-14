@@ -17,6 +17,9 @@ presupuesto=PresupuestoVentana('tennis_api',50)
 _cache=U.CachePersistente('tennis_api_factual_v1',6*3600,max_items=128)
 _ritmo=U.RitmoPedidos(4,minimo_segundos=.3)
 _pause=0
+_context_calls=0
+_context_budget=PresupuestoVentana('tennis_api_contexto',28)
+_metrics={'profiles_verified':0,'histories_verified':0,'rank_fallbacks':0,'rank_conflicts':0}
 
 
 def disponible():
@@ -25,7 +28,7 @@ def disponible():
 
 def factual(raw):
     """Lista permitida ANTES de cachear: se eliminan cuotas y links a mercados."""
-    fields=('id','matchId','date','startTime','player1Id','player2Id','tournamentId','roundId','seed1','seed2','live','result','result_type','match_winner')
+    fields=('id','matchId','date','startTime','player1Id','player2Id','tournamentId','roundId','seed1','seed2','live','result','result_type','match_winner','best_of')
     row={key:raw.get(key) for key in fields if key in raw}
     for player in ('player1','player2'):
         value=raw.get(player) or {}
@@ -34,19 +37,25 @@ def factual(raw):
     value=raw.get('tournament') or {}
     if isinstance(value,dict):
         row['tournament']={k:value.get(k) for k in ('id','name','date','courtId','rankId','countryAcr')}
-        row['tournament']['court']={k:(value.get('court') or {}).get(k) for k in ('id','name')}
+        court=value.get('court')
+        row['tournament']['court']={k:court.get(k) for k in ('id','name')} if isinstance(court,dict) else {}
     return row
 
 
-def _get(path, params, ttl):
-    global _pause
+def _get(path, params, ttl, profile=False, context=False):
+    global _pause, _context_calls
     import planificador_datos as P
     hit, value=_cache.get((path,params))
     if hit:
         return value
     if not disponible() or time.time()<_pause or not P.actual.permitido(FUENTE) or not presupuesto.puede_gastar():
         return None
+    if context and (_context_calls >= 6 or presupuesto.restantes() <= 8 or not _context_budget.puede_gastar()):
+        return None
     _ritmo.esperar()
+    if context:
+        _context_calls += 1
+        _context_budget.registrar()
     presupuesto.registrar()
     info={}
     response=U.get_json('https://'+HOST+path,FUENTE,headers={'X-RapidAPI-Key':KEY,'X-RapidAPI-Host':HOST},
@@ -59,11 +68,16 @@ def _get(path, params, ttl):
             _pause=time.time()+86400
     except (TypeError,ValueError):
         pass
-    if not isinstance(response,dict) or not isinstance(response.get('data'),list):
+    payload=response.get('data') if isinstance(response,dict) else None
+    if profile and isinstance(payload,dict):
+        fields=('id','name','currentRank','rankingDate','playerStatus','bestRank','curRank')
+        data={'data':{key:_profile_field(key,payload.get(key)) for key in fields}, 'fetched_at':time.time()}
+    elif not profile and isinstance(payload,list):
+        data={'data':[factual(row) for row in payload if isinstance(row,dict)],
+              'hasNextPage':response.get('hasNextPage'),'fetched_at':time.time()}
+    else:
         _cache.set((path,params),None,ttl=3600)
         return None
-    data={'data':[factual(row) for row in response['data'] if isinstance(row,dict)],
-          'hasNextPage':response.get('hasNextPage')}
     _cache.set((path,params),data,ttl=ttl)
     return data
 
@@ -158,3 +172,157 @@ def resultados_evaluacion(evento):
             winner=U.firma_equipo(names[0]),status=state,sets=sets,score=None,original_score=raw.get('result'),
             kickoff_utc=obs['startTimestamp'],kickoff_precision='exact',verified_at=time.time()))
     return output
+
+
+def _profile_field(key,value):
+    if key in ('curRank','bestRank'):
+        return {k:value.get(k) for k in ('rank','position','date')} if isinstance(value,dict) else None
+    return value if value is None or isinstance(value,(str,int,float)) and not isinstance(value,bool) else None
+
+
+def iniciar_ciclo():
+    global _context_calls
+    _context_calls=0
+    for key in _metrics:
+        _metrics[key]=0
+
+
+def _pid(jugadora):
+    pid=jugadora.get('tennis_api_id')
+    return str(pid) if str(pid or '').isdigit() and int(pid)>0 else None
+
+
+def perfil_basico(jugadora):
+    pid=_pid(jugadora)
+    if not pid:
+        return None
+    data=_get('/tennis/v2/wta/player/profile/'+pid,{'include':'ranking'},86400,profile=True,context=True)
+    raw=(data or {}).get('data')
+    if not isinstance(raw,dict) or str(raw.get('id'))!=pid or U.firma_equipo(raw.get('name',''))!=U.firma_equipo(jugadora.get('nombre','')):
+        return None
+    rank=raw.get('currentRank')
+    fecha=U._parsear_iso(str(raw.get('rankingDate') or ''))
+    vigente=bool(fecha and 0<=time.time()-fecha.timestamp()<=14*86400)
+    best=raw.get('bestRank') or {}
+    mejor=best.get('rank') or best.get('position')
+    _metrics['profiles_verified']+=1
+    if vigente and isinstance(rank,int) and jugadora.get('ranking') and str(jugadora.get('ranking_fecha'))[:10]==fecha.date().isoformat() and rank!=jugadora['ranking']:
+        jugadora['ranking_conflicto']=True
+    return {'id':pid,'nombre':raw['name'],'ranking':rank if vigente and isinstance(rank,int) and not isinstance(rank,bool) and rank>0 else None,
+            'ranking_fecha':fecha.date().isoformat() if vigente else None,
+            'mejor_ranking':mejor if isinstance(mejor,int) and mejor>0 else None,
+            'estado':raw.get('playerStatus'),'actualizado_utc':(data or {}).get('fetched_at')}
+
+
+def enriquecer_rankings(eventos):
+    """IDs sólo de observaciones con nombres exactos; prioridad para datos ausentes."""
+    pendientes=[]
+    for ev in eventos:
+        if ev.get('deporte')!='Tennis':
+            continue
+        for lado in ('local','visita'):
+            jugador=ev.get(lado) or {}
+            ids=set()
+            for obs in ev.get('_observaciones') or [ev]:
+                if obs.get('fuente')!=FUENTE:
+                    continue
+                for olado in ('local','visita'):
+                    other=obs.get(olado) or {}
+                    if U.firma_equipo(other.get('nombre',''))==U.firma_equipo(jugador.get('nombre','')) and _pid(other):
+                        ids.add(_pid(other))
+            if len(ids)!=1:
+                continue
+            jugador['tennis_api_id']=next(iter(ids))
+            pendientes.append((bool(jugador.get('ranking')),ev.get('startTimestamp',0),jugador))
+    for _,_,jugador in sorted(pendientes,key=lambda t:(t[0],t[1])):
+        # Conservar ranking oficial; comprobar también perfiles ya cacheados sin gasto nuevo.
+        pid=_pid(jugador)
+        cached=_cache.get(('/tennis/v2/wta/player/profile/'+pid,{'include':'ranking'}))[0]
+        if (_context_calls >= 2 or jugador.get('ranking')) and not cached:
+            continue
+        perfil=perfil_basico(jugador)
+        if not perfil or not perfil['ranking']:
+            continue
+        jugador['ranking_tennis_api_observado']=perfil
+        if not jugador.get('ranking'):
+            jugador.update(ranking=perfil['ranking'],ranking_fecha=perfil['ranking_fecha'],ranking_fuente='Tennis API; ranking fechado')
+            _metrics['rank_fallbacks']+=1
+        elif str(jugador.get('ranking_fecha'))[:10]==perfil['ranking_fecha'] and jugador['ranking']!=perfil['ranking']:
+            jugador['ranking_conflicto']=True
+            _metrics['rank_conflicts']+=1
+
+
+def normalizar_historial(raw,pid,ahora=None):
+    ahora=time.time() if ahora is None else ahora
+    a,b=raw.get('player1') or {},raw.get('player2') or {}
+    ids=[str(a.get('id')),str(b.get('id'))]
+    if str(pid) not in ids or ids[0]==ids[1] or not all(U.participante_definido(p.get('name','')) and '/' not in p.get('name','') for p in (a,b)):
+        return None
+    if raw.get('result_type')!='completed':
+        return None
+    fecha=U._parsear_iso(str(raw.get('date') or ''))
+    if not fecha or not ahora-2*366*86400<=fecha.timestamp()<ahora or fecha.year<2016:
+        return None
+    sets=[[int(a),int(b)] for a,b in re.findall(r'(\d+)(?:\(\d+\))?\s*-\s*(\d+)(?:\(\d+\))?',str(raw.get('result') or ''))]
+    def valid(a,b):
+        return (a==6 and b<=4) or (a==7 and b in (5,6)) or (a==b+2 and a>7) or (b==6 and a<=4) or (b==7 and a in (5,6)) or (b==a+2 and b>7)
+    if len(sets) not in (2,3) or not all(valid(a,b) for a,b in sets) or sum(a>b for a,b in sets)!=2:
+        return None
+    if raw.get('match_winner') is not None and str(raw['match_winner'])!=ids[0]:
+        return None
+    gano=str(pid)==ids[0]
+    gf,gc=sum(a for a,b in sets),sum(b for a,b in sets)
+    torneo=raw.get('tournament') or {}
+    superficie={1:'Hard',2:'Clay',3:'I.hard',4:'Carpet',5:'Grass'}.get(torneo.get('courtId'))
+    superficie=(torneo.get('court') or {}).get('name') or superficie
+    rival=b if gano else a
+    return {'id':raw.get('id'),'ts':fecha.timestamp(),'gano':gano,'juegos_favor':gf if gano else gc,
+            'juegos_contra':gc if gano else gf,'superficie':superficie or '', 'rival':rival['name'],
+            'ranking_rival':None, # No usar el ranking actual de la rival como ranking histórico.
+            'nivel':torneo.get('rankId'),'fecha_precision':'exact','torneo':raw.get('tournamentId') or torneo.get('id'),
+            'round':raw.get('roundId'),'marcador_original':raw.get('result'),'estado_resultado':'normal','fuente':FUENTE}
+
+
+def perfil(jugadora):
+    base=perfil_basico(jugadora)
+    if not base:
+        return None
+    pid=base['id']
+    year=datetime.now(timezone.utc).year
+    params={'filter':f'PlayerGroup:singles;GameYear:{year},{year-1}','include':'tournament,tournament.court', 'pageSize':500}
+    rows=[];completo=False
+    for page in (1,2):
+        data=_get('/tennis/v2/wta/player/past-matches/'+pid,dict(params,pageNo=page),86400,context=True)
+        if not data:
+            break
+        raw=data['data']
+        # Filtro de año no respetado: no presentar cobertura completa de la consulta.
+        fechas=[U._parsear_iso(str(p.get('date') or '')) for p in raw]
+        if any(not f or f.year not in (year,year-1) for f in fechas):
+            break
+        rows.extend(p for r in raw if (p:=normalizar_historial(r,pid)))
+        if data.get('hasNextPage') is False:
+            completo=True
+            break
+    dedup={p['id']:p for p in rows if p.get('id')}
+    partidos=sorted(dedup.values(),key=lambda p:p['ts'],reverse=True)
+    _metrics['histories_verified']+=int(bool(partidos))
+    return {'id':pid,'fuente':'Tennis API historial WTA/ITF','partidos':partidos,
+            'recientes':[p for p in partidos if p['ts']>=time.time()-120*86400][:10],
+            'cobertura_completa_2anios':False, # No atribuir completitud de carrera/WTA a una consulta de tercero.
+            'muestras_2anios':len(partidos),'experiencia_carrera_wta':None,'mejor_ranking':base['mejor_ranking'],
+            'cobertura_consulta_tennis_api':completo,'servicio':None,'actualizado_utc':base['actualizado_utc']}
+
+
+def complementar(oficial,alternativo):
+    if not alternativo:
+        return oficial
+    if not oficial:
+        return alternativo
+    # Mantener las entradas oficiales usadas para puntuar. El complemento es trazable y descriptivo.
+    return dict(oficial,complemento_tennis_api=alternativo)
+
+
+def estado_contexto():
+    return dict(_metrics,context_calls_cycle=_context_calls,context_calls_24h=_context_budget.usadas,
+                context_limit_24h=28,reserve_for_calendar_results=8)
