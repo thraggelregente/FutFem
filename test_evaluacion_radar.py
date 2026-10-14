@@ -45,6 +45,14 @@ class DiarioTests(unittest.TestCase):
         self.assertEqual(self.diary.estado()['persistence'],'volatile')
         self.assertEqual(len(list(self.diary.registros())),2)
 
+    def test_clock_only_change_does_not_create_another_snapshot(self):
+        record={'event_key':'a','decision':'discard'}
+        sid=self.diary.guardar('decision',record,{'inputs':{'evaluation_at_utc':1000,'history':[1]}})
+        self.now[0]+=900
+        again=self.diary.guardar('decision',record,{'inputs':{'evaluation_at_utc':1900,'history':[1]}})
+        self.assertEqual(sid,again)
+        self.assertNotEqual(sid,self.diary.guardar('decision',record,{'inputs':{'evaluation_at_utc':1900,'history':[2]}}))
+
     def test_capacity_does_not_evict_referenced_evidence(self):
         with patch.object(A,'MAX_RECORDS',2):
             self.assertIsNotNone(self.diary.guardar('decision',{'event_key':'a'},{'large':'x'}))

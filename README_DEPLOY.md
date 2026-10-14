@@ -109,4 +109,4 @@ SportScore ya consulta fútbol, básquet femenino 5x5 y calendario de tenis indi
 
 ## Observabilidad y evaluación prospectiva
 
-La revisión `radar-evaluation-v1` añade cobertura, diario inmutable, seguimiento de resultados, evaluador offline y planificación con comparación en sombra. Estado operativo, mapa de fuentes, límites y clave opcional `TENNIS_API_RAPIDAPI_KEY`: [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md).
+La revisión `radar-evaluation-v2` añade cobertura, diario inmutable, seguimiento de resultados, evaluador offline y planificación con comparación en sombra. Estado operativo, mapa de fuentes, límites y clave opcional `TENNIS_API_RAPIDAPI_KEY`: [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md).
