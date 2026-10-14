@@ -172,3 +172,7 @@ Comprobación adicional de tabla: `football`/`english-fa-womens-super-league` de
 ## Mapa y aporte real por deporte
 
 El mapa de fuentes por deporte y sus límites está en [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md). `/health` separa `source_capabilities` (rutas habilitadas) de `coverage.sports` (fuentes de calendario que aportaron eventos en el último barrido). Una API configurada no certifica cobertura completa de ligas femeninas. Tennis API ATP WTA ITF es opcional, 50 solicitudes/24h, con suscripción gratuita y `TENNIS_API_RAPIDAPI_KEY`.
+
+## Contexto de tenis y vóley
+
+Perfiles/historial Tennis API, tablas FIVB verificadas y contexto oficial LVF/LNV: [PACK_CONTEXTO_TENIS_VOLEY.md](PACK_CONTEXTO_TENIS_VOLEY.md). Revisión `tennis-volley-context-v1`, sin cambiar umbrales.

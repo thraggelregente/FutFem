@@ -31,7 +31,7 @@ def de_historial(p, sport, source):
                 participants=[U.firma_equipo(n) for n in names], participant_names=names,
                 score=scores, status=p.get('_outcome_status', 'normal'),
                 winner=U.firma_equipo(names[0 if scores[0] > scores[1] else 1]) if scores[0] != scores[1] else None,
-                score_unit='sets' if sport == 'Volleyball' else 'points', period_scope=p.get('_period_scope','unknown'),
+                score_unit='sets' if sport == 'Volleyball' else 'points', set_points=p.get('puntos_por_set') or None, period_scope=p.get('_period_scope','unknown'),
                 original_score=p.get('_original_score', scores), verified_at=time.time())
 
 
@@ -46,6 +46,10 @@ def compatible(event, outcome):
         outcome.get('provider_id') and str(o.get('id')) == str(outcome['provider_id']) or
         outcome.get('provider_url') and o.get('sportscore_url') == outcome['provider_url']) for o in obs)
     # Aun con ID idéntico, verificar deporte y participantes antes de aceptar.
+    ref=outcome.get('verified_event_ref') or {}
+    if outcome.get('source') in ('lvf','lnv') and outcome.get('link_method')=='official_competition_alias_pair_exact_time':
+        exact=exact or bool(ref.get('id') and ref.get('source')) and any(o.get('fuente')==ref.get('source') and o.get('id')==ref.get('id') and
+                           o.get('startTimestamp')==outcome.get('kickoff_utc') for o in obs)
     if exact:
         return True
     ctx = A.contexto(event)
@@ -75,6 +79,11 @@ def etiqueta(decision, outcome):
         result['dominance'] = bool(result['won'] and abs(score[0]-score[1]) >= DOMINANCE[sport])
     elif sport == 'Volleyball' and isinstance(score, list):
         result['straight_sets'] = bool(result['won'] and sorted(score) == [0, 3])
+        points=outcome.get('set_points')
+        if points and all(isinstance(p,list) and len(p)==2 for p in points):
+            names=outcome.get('participants') or []
+            if fav in names:
+                result['point_margin_for_favourite']=sum(a-b for a,b in points)*(1 if names.index(fav)==0 else -1)
         # Un 3-0 no acredita margen amplio de puntos.
     elif sport == 'Tennis' and outcome.get('sets'):
         sets = outcome['sets']

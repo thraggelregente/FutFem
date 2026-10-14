@@ -5,7 +5,7 @@ def construir(modules, espn_activo=True):
     fixed={'sportscore':{'Soccer','Basketball','Tennis','Cricket'}, 'sportapi':{'Soccer'},
            'bbs':{'Basketball'},'balldontlie':{'Basketball'},'worldrugby':{'Rugby'},'wta':{'Tennis'},
            'pwhl':{'Ice Hockey'},'fivb':{'Volleyball'},'cev':{'Volleyball'},'openligadb':{'Soccer'},
-           'cricsheet':{'Cricket'}, 'tennis_api':{'Tennis'}}
+           'cricsheet':{'Cricket'}, 'lvf':{'Volleyball'}, 'lnv':{'Volleyball'}, 'tennis_api':{'Tennis'}}
     scope={'bbs':'WNBA', 'balldontlie':'WNBA', 'pwhl':'PWHL', 'worldrugby':'XV femenino',
            'wta':'cuadros, historial y ranking oficiales; cobertura ITF limitada',
            'fivb':'torneos indoor VIS verificados', 'cev':'competiciones indoor europeas verificadas',
@@ -13,7 +13,9 @@ def construir(modules, espn_activo=True):
            'theoddsapi':'sólo competiciones femeninas de su catálogo activo',
            'oddspapi':'sólo torneos con evidencia femenina', 'espn':'allowlist femenina por liga',
            'cricsheet':'resultados publicados; sin calendario, clubes sin temporada no alertan',
-           'tennis_api':'opcional; acceso y profundidad pendientes de key/suscripción'}
+           'lvf':'tablas e historial oficial Serie A1 femenina, edición actual',
+           'lnv':'tablas e historial oficial D1F, edición descubierta desde web femenina',
+           'tennis_api':'calendario, ranking fechado y complemento WTA/ITF; profundidad parcial'}
     output={sport:{'configured_sources':[], 'calendar_sources':[], 'context_only_sources':[], 'scopes':{}} for sport in sports}
     for name,module in modules.items():
         if not module or name=='espn' and not espn_activo:
@@ -33,6 +35,9 @@ def construir(modules, espn_activo=True):
             if not active:
                 continue
             enabled=fixed[name] if name in fixed else set(getattr(module,'DEPORTES_ACTIVOS',[]))
+            if name in ('lvf','lnv'):
+                context_only={'Volleyball'}
+                enabled=set()
         if not active:
             continue
         for sport in enabled | context_only:

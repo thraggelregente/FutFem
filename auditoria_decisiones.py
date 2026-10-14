@@ -8,7 +8,7 @@ import zlib
 from datetime import datetime, timezone
 import utilidades as U
 
-REVISION = 'radar-evaluation-v2'
+REVISION = 'tennis-volley-context-v1'
 TTL = 90 * 86400
 MAX_RECORDS = 10000
 MAX_BYTES = 100_000_000
@@ -59,7 +59,7 @@ def contexto(ev):
 def _material(value):
     """El reloj de cada barrido no constituye un cambio de evidencia deportiva."""
     if isinstance(value,dict):
-        return {k:_material(v) for k,v in value.items() if k not in ('evaluation_at_utc','inputs_observed_at_utc')}
+        return {k:_material(v) for k,v in value.items() if k not in ('evaluation_at_utc','inputs_observed_at_utc','actualizado_utc')}
     if isinstance(value,list):
         return [_material(v) for v in value]
     return value

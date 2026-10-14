@@ -10,10 +10,13 @@ from fuentes_publicas import Cliente, enteros, fechas_validas, instante_utc, xml
 
 FUENTE = "fivb"
 ACTIVO = os.environ.get("FIVB_ACTIVO", "1") != "0"
-_cache = U.CachePersistente("fivb_v1", 6 * 3600, max_items=8)
+_cache = U.CachePersistente("fivb_v1", 6 * 3600, max_items=96)
 cliente = Cliente(FUENTE, _cache)
 presupuesto = cliente.presupuesto
 _historial = []
+_pool_calls=0
+_pool_seen=set()
+_estado_tablas={"verified":0,"rejected":0}
 
 
 def disponible():
@@ -44,7 +47,8 @@ def normalizar(nodo, ahora=None):
     sufijo = " U" + edades[0] if edades else ""
     contexto = f"fivb:{raw.get('NoTournament')}"
     comunes = {"deporte": "Volleyball", "fuente": FUENTE, "contexto_competicion": contexto,
-               "historial_aislado": True, "torneo": torneo.get("Name", "Vóley femenino FIVB"),
+               "historial_aislado": True, "fivb_pool": raw.get("NoPool"),
+               "fivb_start":torneo.get("StartDate"), "fivb_end":torneo.get("EndDate"), "torneo": torneo.get("Name", "Vóley femenino FIVB"),
                "femenino_seguro": True, "startTimestamp": ts,
                "local": {"id": f"fivb:{nums[0]}", "nombre": na + sufijo},
                "visita": {"id": f"fivb:{nums[1]}", "nombre": nb + sufijo}}
@@ -55,7 +59,15 @@ def normalizar(nodo, ahora=None):
             or not scores or max(scores) != 3 or min(scores) not in (0, 1, 2)
             or raw.get("ResultType") != "0"):
         return None
-    return dict(comunes, id="fivb_" + raw["No"], _outcome_status="normal", fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"],
+    puntos_set=[]
+    for i in range(1,6):
+        puntos=enteros(raw.get(f'PointsTeamASet{i}'),raw.get(f'PointsTeamBSet{i}'))
+        if puntos and max(puntos)>0:
+            puntos_set.append(list(puntos))
+    from voley_oficial import _puntos_validos
+    if not _puntos_validos(puntos_set,list(scores)):
+        puntos_set=[]
+    return dict(comunes, puntos_por_set=puntos_set, id="fivb_" + raw["No"], _outcome_status="normal", fecha=U.ts_a_iso_utc(ts), id_local=comunes["local"]["id"],
                 id_visita=comunes["visita"]["id"], nom_local=na + sufijo, nom_visita=nb + sufijo,
                 puntos_local=scores[0], puntos_visita=scores[1])
 
@@ -66,7 +78,7 @@ def obtener_eventos(deporte):
         return []
     now = datetime.now(timezone.utc)
     desde, hasta = (now - timedelta(days=90)).date().isoformat(), (now + timedelta(days=2)).date().isoformat()
-    req = ET.Element("Request", Type="GetVolleyMatchList", Fields="No NoTournament DateTimeUtc Status TeamAName TeamBName NoTeamA NoTeamB MatchPointsA MatchPointsB ResultType")
+    req = ET.Element("Request", Type="GetVolleyMatchList", Fields="No NoTournament NoPool DateTimeUtc Status TeamAName TeamBName NoTeamA NoTeamB MatchPointsA MatchPointsB ResultType " + " ".join(f"PointsTeam{side}Set{i}" for side in "AB" for i in range(1,6)))
     ET.SubElement(req, "Filter", FirstDate=desde, LastDate=hasta, TournamentGenders="W")
     ET.SubElement(req, "Relation", Name="Tournament", Fields="Name Gender StartDate EndDate")
     texto = cliente.pedir("https://www.fivb.org/Vis2009/XmlRequest.asmx", {"Request": ET.tostring(req, encoding="unicode")}, xml=True)
@@ -93,3 +105,80 @@ def resultados_evaluacion(evento):
         return []
     from resultados_evaluacion import de_historial
     return [r for p in _historial if (r := de_historial(p, 'Volleyball', FUENTE))]
+
+
+def iniciar_ciclo():
+    global _pool_calls
+    _pool_calls=0
+    _pool_seen.clear()
+    _estado_tablas.update(verified=0,rejected=0)
+
+
+def _xml(tipo,fields,**attrs):
+    req=ET.Element('Request',Type=tipo,Fields=fields,**{k:str(v) for k,v in attrs.items()})
+    return xml_seguro(cliente.pedir('https://www.fivb.org/Vis2009/XmlRequest.asmx',
+                                   {'Request':ET.tostring(req,encoding='unicode')},ttl=6*3600,xml=True))
+
+
+def normalizar_tabla(root,evento,historial,ahora=None):
+    """La tabla debe reconciliar TODOS sus contadores con resultados de la edición."""
+    ahora=time.time() if ahora is None else ahora
+    if root is None or root.tag!='VolleyballPoolRankings':
+        return None,0
+    inicio=instante_utc(evento.get('fivb_start'))
+    fin=instante_utc(evento.get('fivb_end'))
+    if not inicio or not fin or not 0<=ahora-inicio<=90*86400 or fin<evento.get('startTimestamp',0)-86400:
+        return None,0 # Una ventana de 90 días no acredita la tabla de una temporada más larga.
+    pool=str(evento.get('fivb_pool') or '')
+    contexto=evento.get('contexto_competicion')
+    games={p['id']:p for p in historial if p.get('contexto_competicion')==contexto and str(p.get('fivb_pool'))==pool}
+    contadores={}
+    for p in games.values():
+        for side,other in (('local','visita'),('visita','local')):
+            tid=str(p['id_'+side]); row=contadores.setdefault(tid,{'wins':0,'losses':0,'sets':0})
+            propios=p['puntos_'+side]; rivales=p['puntos_'+other]
+            row['wins' if propios>rivales else 'losses']+=1
+            row['sets']+=propios-rivales
+    tabla={}
+    for nodo in root:
+        raw=nodo.attrib
+        values=enteros(raw.get('NoTeam'),raw.get('Position'),raw.get('MatchesWon'),raw.get('MatchesLost'),raw.get('SetsWon'),raw.get('SetsLost'))
+        if not values or str(raw.get('NoPool'))!=pool or min(values)<0:
+            return None,0
+        tid,pos,w,l,sw,sl=values
+        key='fivb:'+str(tid)
+        if key in tabla or not tid or not pos:
+            return None,0
+        observed=contadores.get(key,{'wins':0,'losses':0,'sets':0})
+        if (w,l,sw-sl)!=(observed['wins'],observed['losses'],observed['sets']):
+            return None,0
+        tabla[key]={'posicion':pos,'victorias':w,'derrotas':l,'empates':0,'dif_neta':sw-sl,
+                    'fuente':FUENTE,'edicion':contexto,'grupo':pool}
+    if len(tabla)<2 or sorted(row['posicion'] for row in tabla.values())!=list(range(1,len(tabla)+1)):
+        return None,0
+    ids=[(evento.get(l) or {}).get('id') for l in ('local','visita')]
+    return (tabla,len(tabla)) if all(i in tabla for i in ids) else (None,0)
+
+
+def tabla_partido(evento):
+    global _pool_calls
+    pool=evento.get('fivb_pool')
+    if evento.get('fuente')!=FUENTE or not str(pool or '').isdigit():
+        return None,0
+    if str(pool) not in _pool_seen:
+        if _pool_calls>=2:return None,0
+        _pool_seen.add(str(pool))
+        _pool_calls+=1
+    meta=_xml('GetVolleyPool','No NoTournament',No=pool)
+    expected=str(evento.get('contexto_competicion') or '').removeprefix('fivb:')
+    if meta is None or meta.tag!='VolleyballPool' or str(meta.get('NoTournament'))!=expected or str(meta.get('No'))!=str(pool):
+        _estado_tablas['rejected']+=1
+        return None,0
+    root=_xml('GetVolleyPoolRanking','NoTeam NoPool Position MatchesWon MatchesLost SetsWon SetsLost',NoPool=pool)
+    tabla,cantidad=normalizar_tabla(root,evento,_historial)
+    _estado_tablas['verified' if tabla else 'rejected']+=1
+    return tabla,cantidad
+
+
+def estado_contexto():
+    return dict(_estado_tablas,table_attempts_cycle=_pool_calls)

@@ -51,6 +51,9 @@ def _experiencia(perfil):
 
 def _novata_documentada(perfil):
     exp = _experiencia(perfil)
+    complemento=(perfil or {}).get("complemento_tennis_api") or {}
+    if complemento.get("muestras_2anios",0)>5:
+        return False # El historial ITF observado contradice la condición de poca experiencia.
     mejor = (perfil or {}).get("mejor_ranking")
     return bool(perfil and perfil.get("cobertura_completa_2anios") and exp is not None and exp <= 5
                 and perfil.get("muestras_2anios", 0) <= 3
@@ -96,9 +99,17 @@ def evaluar(ev, perfiles=None, ahora=None):
         evidencia.append(f"Ranking {j.get('nombre')}: {j.get('ranking') or 'desconocido'}; "
                          f"{j.get('ranking_fuente') or 'sin fuente'}; fecha {j.get('ranking_fecha') or 'sin fecha'}")
     if pf and pr:
-        evidencia.append(f"Historial oficial registrado en los últimos dos años: {jug_f.get('nombre')} "
+        prefix = "Historial oficial registrado" if all((p or {}).get("fuente", "WTA historial oficial")=="WTA historial oficial" for p in (pf,pr)) else "Historial registrado en las fuentes consultadas"
+        evidencia.append(f"{prefix} en los últimos dos años: {jug_f.get('nombre')} "
                          f"{pf.get('muestras_2anios', 0)} partidos; {jug_r.get('nombre')} {pr.get('muestras_2anios', 0)} partidos. "
                          "No equivale necesariamente a toda su carrera. Las fechas identifican la semana del torneo, no el día de cada partido.")
+    for nombre,perfil in ((jug_f.get('nombre'),pf),(jug_r.get('nombre'),pr)):
+        complemento=(perfil or {}).get('complemento_tennis_api')
+        if complemento:
+            evidencia.append(f"Tennis API: {nombre}, {complemento.get('muestras_2anios',0)} resultados WTA/ITF registrados; "
+                             f"{len(complemento.get('recientes',[]))} recientes mostrados. Cobertura parcial, contexto sin puntaje adicional.")
+        elif perfil and perfil.get('fuente')=='Tennis API historial WTA/ITF':
+            evidencia.append(f"{nombre}: contexto Tennis API WTA/ITF; no demuestra carrera completa ni condición amateur.")
     forma = _comparar(pf, pr, ahora=ahora)
     superficie = _comparar(pf, pr, ev.get("superficie"), ahora=ahora) if ev.get("superficie") else None
     apoyo = 0
@@ -128,4 +139,5 @@ def evaluar(ev, perfiles=None, ahora=None):
     return {"alertar": puntos >= 2, "favorito": fav, "puntaje": puntos, "evidencia": evidencia,
             "tipo": "ASIMETRÍA TENIS FEMENINO" if asimetria else "CANDIDATO TENIS FEMENINO — BRECHA DE RANKING",
             "calidad": "Documentada, con límites de cobertura" if asimetria else "Limitada",
-            "fuentes": ["WTA historial oficial"] if pf or pr else []}
+            "fuentes": sorted({p.get("fuente", "historial sin atribución") for p in (pf,pr) if p} |
+                              {"Tennis API historial WTA/ITF" for p in (pf,pr) if p and p.get("complemento_tennis_api")})}
