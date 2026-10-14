@@ -8,7 +8,7 @@ import zlib
 from datetime import datetime, timezone
 import utilidades as U
 
-REVISION = 'radar-evaluation-v1'
+REVISION = 'radar-evaluation-v2'
 TTL = 90 * 86400
 MAX_RECORDS = 10000
 MAX_BYTES = 100_000_000
@@ -56,6 +56,15 @@ def contexto(ev):
             'format': ev.get('formato_cricket') or ('singles' if ev.get('deporte') == 'Tennis' else 'unknown')}
 
 
+def _material(value):
+    """El reloj de cada barrido no constituye un cambio de evidencia deportiva."""
+    if isinstance(value,dict):
+        return {k:_material(v) for k,v in value.items() if k not in ('evaluation_at_utc','inputs_observed_at_utc')}
+    if isinstance(value,list):
+        return [_material(v) for v in value]
+    return value
+
+
 class Diario:
     def __init__(self, nombre='evaluacion_v1', clock=time.time):
         self.nombre, self.clock = nombre, clock
@@ -101,7 +110,7 @@ class Diario:
         # Instante y entrega son metadatos de la nueva versión, no el criterio de reescritura.
         for field in ('observed_at_utc', 'snapshot_id', 'persistence'):
             stable['record'].pop(field, None)
-        fingerprint = digest(material if material is not None else stable)
+        fingerprint = digest(material if material is not None else _material(stable))
         entity = tipo + ':' + str(value.get('event_key') or value.get('outcome_key') or fingerprint)
         old = self.index['latest'].get(entity)
         if old and self.index['objects'].get(old, {}).get('fingerprint') == fingerprint:

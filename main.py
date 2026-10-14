@@ -64,7 +64,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "radar-evaluation-v1",
+            "revision": "radar-evaluation-v2",
             "coverage": ESTADO.get("coverage", {}),
             "audit": ESTADO.get("audit", {}),
             "outcome_evaluation": ESTADO.get("outcome_evaluation", {}),

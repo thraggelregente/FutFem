@@ -1,6 +1,6 @@
 # Diario, cobertura y evaluación del radar
 
-Implementado el 14/10/2026. Revisión de producción: `radar-evaluation-v1`.
+Implementado el 14/10/2026. Revisión de producción: `radar-evaluation-v2`.
 
 ## Qué está funcionando
 
