@@ -95,8 +95,9 @@ def evaluar(ev, perfiles=None):
         evidencia.append(f"Ranking {j.get('nombre')}: {j.get('ranking') or 'desconocido'}; "
                          f"{j.get('ranking_fuente') or 'sin fuente'}; fecha {j.get('ranking_fecha') or 'sin fecha'}")
     if pf and pr:
-        evidencia.append(f"Historial oficial: {pf.get('muestras_2anios', 0)}/{pr.get('muestras_2anios', 0)} partidos "
-                         "registrados en dos años; fechas con precisión de semana del torneo.")
+        evidencia.append(f"Historial oficial registrado en los últimos dos años: {jug_f.get('nombre')} "
+                         f"{pf.get('muestras_2anios', 0)} partidos; {jug_r.get('nombre')} {pr.get('muestras_2anios', 0)} partidos. "
+                         "No equivale necesariamente a toda su carrera. Las fechas identifican la semana del torneo, no el día de cada partido.")
     forma = _comparar(pf, pr)
     superficie = _comparar(pf, pr, ev.get("superficie")) if ev.get("superficie") else None
     apoyo = 0
@@ -104,7 +105,9 @@ def evaluar(ev, perfiles=None):
     for nombre, res in (("Forma frente a bandas comparables de rivales", forma), ("Superficie oficial " + str(ev.get("superficie")), superficie)):
         if res is None:
             continue
-        evidencia.append(f"{nombre}: brecha de victorias {res['brecha']:+.0%}; muestras {res['n_f']}/{res['n_r']}")
+        evidencia.append(f"{nombre}: diferencia de tasa de victorias {res['brecha']:+.0%} "
+                         f"({jug_f.get('nombre')} menos {jug_r.get('nombre')}); "
+                         f"muestras: {jug_f.get('nombre')} {res['n_f']} partidos, {jug_r.get('nombre')} {res['n_r']} partidos.")
         if res["brecha"] >= 0.25:
             apoyo += 1
         elif res["brecha"] <= -0.25:

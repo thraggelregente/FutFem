@@ -149,7 +149,7 @@ class PresentacionTests(unittest.TestCase):
         texto = mensajes.alerta("Tennis", "Torneo", "A", "B", "13/10 11:30 ARG", ["Falta contexto"],
                                 "B", "Magnitud: moderada; calidad: limitada", ["wta", "WTA oficial", "espn"],
                                 "CANDIDATO TENIS — BRECHA DE RANKING")
-        self.assertIn("Mejor ranking", texto)
+        self.assertIn("Jugadora mejor posicionada", texto)
         self.assertNotIn("Favorito", texto)
         self.assertNotIn("Ventaja observada", texto)
         self.assertIn("Fuentes: WTA · ESPN", texto)
