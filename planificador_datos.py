@@ -4,6 +4,19 @@ import time
 from collections import Counter
 
 
+def saldos_disponibles(presupuestos):
+    """Un resumen de texto antiguo no certifica solicitudes disponibles."""
+    salida = {}
+    for source, row in presupuestos.items():
+        if not isinstance(row, dict):
+            continue
+        try:
+            salida[source] = max(0, int(row.get('disponibles_bot', 0)))
+        except (TypeError, ValueError):
+            salida[source] = 0
+    return salida
+
+
 class Planificador:
     def __init__(self):
         self.paused = {}
