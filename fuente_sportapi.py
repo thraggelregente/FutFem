@@ -12,11 +12,12 @@ from zoneinfo import ZoneInfo
 
 import utilidades as U
 from fuentes_publicas import enteros
+from presupuesto_mensual import DiarioMensual
 
 FUENTE = "sportapi"
 API_KEY = os.environ.get("SPORTAPI_API_KEY", "").strip()
 BASE = "https://sportapi.ai/api"
-presupuesto = U.PresupuestoDiario("sportapi", 2000, reserva=10)
+presupuesto = DiarioMensual("sportapi", 2000, 14000, desde='2026-11-01', reserva=0)
 _cache = U.CachePersistente("sportapi_v1", 6 * 3600, max_items=1024)
 _ritmo = U.RitmoPedidos(20, minimo_segundos=1)
 _pausa = 0
