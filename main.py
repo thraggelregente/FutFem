@@ -35,7 +35,7 @@ import mapa_fuentes
 
 
 # ---------------------------------------------------------------------------
-# HTTP de salud para Render.
+# HTTP de salud del servicio.
 # ---------------------------------------------------------------------------
 ESTADO = {
     "inicio": time.time(),
@@ -66,7 +66,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "sportsapi-app-v1",
+            "revision": "provider-utilization-v1",
             "coverage": ESTADO.get("coverage", {}),
             "audit": ESTADO.get("audit", {}),
             "outcome_evaluation": ESTADO.get("outcome_evaluation", {}),
@@ -184,6 +184,9 @@ fuente_tauron = _importar("fuente_tauron")
 _ultimo_intento = U.cargar_json("ultimo_intento_v2.json", {})
 if not isinstance(_ultimo_intento, dict):
     _ultimo_intento = {}
+
+_contexto_intento = U.cargar_json('contexto_intento_v1.json', {})
+if not isinstance(_contexto_intento,dict):_contexto_intento={}
 
 registro = U.RegistroVistos(ARCHIVO_ALERTADOS, dias_retencion=3)
 _ultimo_aviso_ciego = 0.0
@@ -383,12 +386,35 @@ def _registrar_sin_datos(clave: str, ev: dict[str, Any]) -> None:
     fallos = _enfriamiento.get(clave, (0, 0))[1] + 1
     minutos = min(ENFRIAMIENTO_MAX_MIN, ENFRIAMIENTO_SIN_DATOS_MIN * 2 ** (fallos - 1))
     _enfriamiento[clave] = (time.time() + minutos * 60, fallos)
-    _guardar_enfriamiento(_enfriamiento)
+    # Se persiste una vez al terminar el barrido.
 
 
-def _en_enfriamiento(clave: str, ahora_ts: float) -> bool:
+def _firma_contexto(ev):
+    observations=[]
+    for obs in ev.get('_observaciones') or [ev]:
+        observations.append({'source':obs.get('fuente'),'id':obs.get('id'),
+                             'competition':obs.get('contexto_competicion') or obs.get('liga_ref'),
+                             'season':obs.get('season_ref'), 'kickoff':obs.get('startTimestamp'),
+                             'participants':[{k:(obs.get(l) or {}).get(k) for k in
+                                              ('nombre','ranking','ranking_fecha','entry','entry_fuente')}
+                                             for l in ('local','visita')]})
+    official=[(m.oficial.edicion,m.oficial.status.get('history',0),auditoria.digest(m.oficial.tabla))
+              for m in _contextos_oficiales(ev) if hasattr(m,'oficial')]
+    return auditoria.digest({'observations':sorted(observations,key=auditoria.serializar),
+                              'official':official,
+                              'participants':[{k:(ev.get(l) or {}).get(k) for k in
+                                               ('nombre','ranking','ranking_fecha','entry','entry_fuente')}
+                                              for l in ('local','visita')]})
+
+
+def _en_enfriamiento(clave: str, ahora_ts: float, ev=None) -> bool:
     item = _enfriamiento.get(clave)
-    return bool(item and ahora_ts < item[0])
+    if not item or ahora_ts>=item[0]:return False
+    if ev is not None and _contexto_intento.get(clave)!=_firma_contexto(ev):
+        # Un proveedor/ranking/contexto nuevo habilita un intento, no todos los barridos.
+        _enfriamiento.pop(clave,None)
+        return False
+    return True
 
 
 def _tiene_historial_propio(ev: dict[str, Any]) -> bool:
@@ -465,10 +491,35 @@ _COSTO_HISTORIAL = {
 }
 
 
+def _respaldo_compatible(ev, obs):
+    if obs is ev or (obs.get('fuente'),obs.get('id'))==(ev.get('fuente'),ev.get('id')):
+        return True
+    if obs.get('deporte')!=ev.get('deporte'):return False
+    if abs(_inicio_evento(ev)-_inicio_evento(obs))>3600:return False
+    a,b=auditoria.contexto(ev),auditoria.contexto(obs)
+    if a['category']!=b['category'] or a['format']!=b['format']:return False
+    # Los IDs de temporada no son comparables entre proveedores.
+    seasons=[o.get('season_label') for o in (ev,obs)]
+    if all(seasons) and str(seasons[0])!=str(seasons[1]):return False
+    if ev.get('fuente')==obs.get('fuente') and a['season']!='unknown' and b['season']!='unknown' and str(a['season'])!=str(b['season']):return False
+    # Sin un catálogo común no equiparar IDs de liga de proveedores distintos.
+    return bool(ev.get('torneo') and U.normalizar(ev['torneo'])==U.normalizar(obs.get('torneo','')) and
+                {U.firma_equipo(ev[l]['nombre']) for l in ('local','visita')}==
+                {U.firma_equipo(obs[l]['nombre']) for l in ('local','visita')})
+
+
+def _modulos_historial():
+    return {"fivb":fuente_fivb,"cev":fuente_cev,"bbs":fuente_bbs,
+            "sportscore":fuente_sportscore,"worldrugby":fuente_worldrugby,
+            "sportapi":fuente_sportapi,"balldontlie":fuente_balldontlie,
+            "tauron":fuente_tauron,"sportsapi_app":fuente_sportsapi_app}
+
+
 def _historial_equipo(ev, lado):
     oficiales = _contextos_oficiales(ev)
-    if ev.get("historial_aislado"):
-        modulo = {"fivb": fuente_fivb, "cev": fuente_cev, "bbs": fuente_bbs, "sportscore": fuente_sportscore, "worldrugby": fuente_worldrugby, "sportapi": fuente_sportapi, "balldontlie": fuente_balldontlie, "tauron": fuente_tauron, "sportsapi_app": fuente_sportsapi_app}.get(ev.get("fuente"))
+    propios = _modulos_historial()
+    if ev.get("historial_aislado") and len(ev.get("_observaciones") or [ev])==1:
+        modulo = propios.get(ev.get("fuente"))
         mejor = modulo.historial_equipo(ev, lado) if modulo else []
         # Sólo respaldos nacionales que validaron ambos nombres y competición.
         # CEV internacional no se mezcla con resultados de una liga doméstica.
@@ -499,6 +550,8 @@ def _historial_equipo(ev, lado):
         if suficiente(modulo.historial_equipo(ev, lado)):
             return mejor
     for candidato in observaciones:
+        if not _respaldo_compatible(ev,candidato):
+            continue
         fuente = str(candidato.get("fuente") or "")
         lado_candidato = next((l for l in ("local", "visita")
                                if U.firma_equipo((candidato.get(l) or {}).get("nombre", "")) ==
@@ -511,25 +564,16 @@ def _historial_equipo(ev, lado):
             continue
         probadas.add(clave_obs)
         try:
-            historial = U.historial_desde_fuentes(
-                candidato, lado_candidato, fuente_espn,
-                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_highlightly,
-                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_oddspapi,
-                None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_api_football,
-                fuente_thesportsdb=fuente_thesportsdb, modo="propia",
-            )
-            if fuente == "bbs" and fuente_bbs:
-                historial = fuente_bbs.historial_equipo(candidato, lado_candidato)
-            elif fuente == "sportscore" and fuente_sportscore:
-                historial = fuente_sportscore.historial_equipo(candidato, lado_candidato)
-            elif fuente == "balldontlie" and fuente_balldontlie:
-                historial = fuente_balldontlie.historial_equipo(candidato, lado_candidato)
-            elif fuente == "worldrugby" and fuente_worldrugby:
-                historial = fuente_worldrugby.historial_equipo(candidato, lado_candidato)
-            elif fuente == "sportapi" and fuente_sportapi:
-                historial = fuente_sportapi.historial_equipo(candidato, lado_candidato)
-            elif fuente == "sportsapi_app" and fuente_sportsapi_app:
-                historial = fuente_sportsapi_app.historial_equipo(candidato,lado_candidato)
+            modulo=propios.get(fuente)
+            if modulo:
+                historial=modulo.historial_equipo(candidato,lado_candidato)
+            else:
+                historial=U.historial_desde_fuentes(
+                    candidato,lado_candidato,fuente_espn,
+                    None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_highlightly,
+                    None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_oddspapi,
+                    None if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL else fuente_api_football,
+                    fuente_thesportsdb=fuente_thesportsdb,modo="propia")
             # Remapea los dos participantes del evento, incluso con localía invertida.
             mapa_ids = {}
             for lado_actual in ("local", "visita"):
@@ -560,7 +604,7 @@ def _historial_equipo(ev, lado):
             except Exception as exc:
                 U.log(f"[historial/openligadb] {type(exc).__name__} para {ev.get('id')}")
 
-    if ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL:
+    if ev.get("historial_aislado") or ev.get("deporte") in DEPORTES_SIN_CUPO_COMERCIAL:
         return mejor  # solo historial de su liga/temporada; ningún respaldo medido por nombre
     if libro_resultados:
         try:
@@ -1165,7 +1209,7 @@ def ejecutar_barrido_radar():
             break
         st = resumen.setdefault(f"{ev.get('fuente', 'ext')}:{ev.get('deporte', 'Multi')}", _nuevo_stat())
         clave_ev = _clave_canonica_evento(ev)
-        if _en_enfriamiento(clave_ev, ahora_ts):
+        if _en_enfriamiento(clave_ev, ahora_ts, ev):
             st["enfriados"] += 1
             _decision(ev, "pending", "cooldown")
             continue
@@ -1200,6 +1244,7 @@ def ejecutar_barrido_radar():
             busquedas_por_nombre += 1
         intentos += 1
         _ultimo_intento[clave_ev] = ahora_ts
+        _contexto_intento[clave_ev] = _firma_contexto(ev)
         descartes_antes = st["lejanos"] + st["no_vigentes"] + st["ya_vistos"]
         try:
             _procesar_evento(ev, st, ahora_ts)
@@ -1225,6 +1270,9 @@ def ejecutar_barrido_radar():
     for k in list(_ultimo_intento):
         if k not in claves_actuales:
             _ultimo_intento.pop(k, None)
+    for key in list(_contexto_intento):
+        if key not in claves_actuales:_contexto_intento.pop(key,None)
+    U.guardar_json('contexto_intento_v1.json',_contexto_intento)
     U.guardar_json("ultimo_intento_v2.json", _ultimo_intento)
     ESTADO["analizados"] = sum(st["analizados"] for st in resumen.values())
     ESTADO["errores_ultimo_barrido"] = sum(st["errores"] for st in resumen.values())

@@ -60,6 +60,61 @@ class Oficial:
         self.historial=[];self.eventos=[];self.tabla={};self.edicion=None
         self.details_cycle=0
         self.status={'state':'not_loaded','teams':0,'history':0,'events':0}
+        self.last_verified=0
+        self._saved_at=0
+        if fuente in ('lvf','lnv'):
+            snapshot=U.cargar_json(fuente+'_contexto_validado_v1.json',{})
+            if isinstance(snapshot,dict):
+                self.last_verified=snapshot.get('verified_at',0)
+                self.edicion=snapshot.get('edition')
+                if self.last_verified and self._vigente():
+                    self.tabla=snapshot.get('table') or {}
+                    self.historial=snapshot.get('history') or []
+                    for name in ('_lvf_pending','_lnv_pid','_lnv_expected'):
+                        if name in snapshot:setattr(self,name,snapshot[name])
+                    self.status.update(state='last_valid_context',teams=len(self.tabla),history=len(self.historial),
+                                       edition=self.edicion,last_verified_utc=self.last_verified)
+                elif snapshot:self.invalidar('expired_context')
+
+    def _vigente(self, now=None):
+        now=time.time() if now is None else now
+        if not isinstance(self.last_verified,(int,float)):return False
+        if not self.last_verified:return True # contextos construidos por parsers/pruebas
+        if not 0<=now-self.last_verified<=48*3600:return False
+        if self.fuente=='lvf':return self.edicion=='lvf:a1:'+temporada_actual(now)
+        if self.fuente=='lnv':
+            return temporada_actual(self.last_verified)==temporada_actual(now)
+        return True
+
+    def invalidar(self, reason):
+        self.tabla={};self.historial=[];self.eventos=[];self.edicion=None;self.last_verified=0
+        for name in ('_lvf_pending','_lnv_pid','_lnv_expected'):
+            self.__dict__.pop(name,None)
+        self.status.update(state=reason,teams=0,history=0,events=0,edition=None)
+        if self.fuente in ('lvf','lnv'):
+            U.guardar_json(self.fuente+'_contexto_validado_v1.json',{})
+
+    def no_disponible(self, reason='unavailable'):
+        if self.tabla and self.last_verified and self._vigente():
+            self.status.update(state='last_valid_context',refresh_error=reason,
+                               last_verified_utc=self.last_verified,max_age_hours=48)
+        else:self.invalidar('expired_context' if self.last_verified else reason)
+
+    def guardar_contexto(self, verified=False):
+        if self.fuente not in ('lvf','lnv'):return
+        now=time.time()
+        if verified:self.last_verified=now
+        if not self.tabla or not self.last_verified:return
+        snapshot={'edition':self.edicion,'verified_at':self.last_verified,'table':self.tabla,'history':self.historial}
+        for name in ('_lvf_pending','_lnv_pid','_lnv_expected'):
+            if hasattr(self,name):snapshot[name]=getattr(self,name)
+        signature=U.CachePersistente._clave({k:v for k,v in snapshot.items() if k!='verified_at'})
+        if signature!=getattr(self,'_saved_signature',None) or now-self._saved_at>=3600:
+            if U.guardar_json(self.fuente+'_contexto_validado_v1.json',snapshot):
+                self._saved_signature=signature;self._saved_at=now
+        self.status.update(last_verified_utc=self.last_verified,max_age_hours=48)
+        if verified:self.status.pop('refresh_error',None)
+
 
     def cargar_lvf(self,text,now=None):
         now=time.time() if now is None else now
@@ -90,6 +145,7 @@ class Oficial:
                                 'fuente':self.fuente,'points_for':numero(values[14]),'points_against':numero(values[15]),'season':season}
             elif len(heads)>3 and not heads[0] and any(U.firma_equipo(h) in tabla for h in heads[1:]):matrix=rows
         if len(tabla)<6 or not matrix or sorted(r['posicion'] for r in tabla.values())!=list(range(1,len(tabla)+1)):return False
+        if self.edicion!='lvf:a1:'+season:self.historial=[]
         self.edicion='lvf:a1:'+season
         hist=[]
         # La matriz verifica rival, orientación y marcador; fecha/hora se carga desde match-center.
@@ -166,7 +222,7 @@ class Oficial:
                 'puntos_por_set':set_points or [],'_outcome_status':'normal'}
 
     def tabla_para_evento(self,evento):
-        if evento.get('deporte')!='Volleyball':return None,0
+        if evento.get('deporte')!='Volleyball' or not self._vigente():return None,0
         if evento.get('fuente')==self.fuente and evento.get('contexto_competicion')!=self.edicion:return None,0
         # Para respaldar un tercero exigir competición nacional explícita.
         if any(U.categoria_equipo(str(value))!=((),False) for value in [evento.get('torneo','')]+[(evento.get(l) or {}).get('nombre','') for l in ('local','visita')]):return None,0
@@ -285,8 +341,11 @@ def detalle_lvf(text,pending,season,now=None):
 
 def cargar_lvf(oficial):
     text=oficial.cliente.pedir('https://www.legavolleyfemminile.it/classifica/',{'no_cache_sa':1},xml=True)
-    if not oficial.cargar_lvf(text or ''):
-        oficial.tabla={};oficial.historial=[];oficial.status.update(state='rejected_schema_or_season');return
+    if not text:
+        oficial.no_disponible();return
+    if not oficial.cargar_lvf(text):
+        oficial.invalidar('rejected_schema_or_season');return
+    oficial.guardar_contexto(verified=True)
     season=oficial.edicion.split(':')[-1]
     completar_lvf(oficial, equipos=set())
 
@@ -295,7 +354,11 @@ def completar_lvf(oficial, equipos):
     if not oficial.edicion or not hasattr(oficial, '_lvf_pending'):
         return
     season=oficial.edicion.split(':')[-1]
-    rows=[];nuevos=0
+    expected={oficial.fuente+'_'+p['match_id']:p for p in oficial._lvf_pending}
+    rows=[p for p in oficial.historial if p['id'] in expected and
+          [p['puntos_local'],p['puntos_visita']]==expected[p['id']]['score'] and
+          0<=time.time()-p['startTimestamp']<=90*86400]
+    nuevos=0
     for p in oficial._lvf_pending:
         url='https://www.legavolleyfemminile.it/match-center/'+p['match_id']+'/'
         params={'no_cache_sa':1}
@@ -308,27 +371,39 @@ def completar_lvf(oficial, equipos):
         if result:
             ts,sets=result
             rows.append(oficial._historico(p['a'],p['b'],p['score'],ts,p['match_id'],sets))
-    oficial.historial=rows
-    oficial.status.update(history=len(rows),state='verified_table_and_results' if rows else 'verified_table')
+    oficial.historial=list({p['id']:p for p in rows}.values())
+    oficial.guardar_contexto()
+    oficial.status.update(history=len(oficial.historial),state='verified_table_and_results' if rows else 'verified_table')
 
 
 def cargar_lnv(oficial):
     page=oficial.cliente.pedir('https://www.lnv.fr/d1f/statistiques',xml=True)
     if not page:
-        oficial.tabla={};oficial.historial=[];oficial.status.update(state='unavailable');return
+        oficial.no_disponible();return
     ids=set(re.findall(r'https://lnv-web\.dataproject\.com/Statistics_AllPlayers\.aspx\?ID=(\d+)',page))
     if len(ids)!=1:
-        oficial.tabla={};oficial.historial=[];oficial.status.update(state='ambiguous_edition');return
+        oficial.invalidar('ambiguous_edition');return
     edition=next(iter(ids))
+    if oficial.edicion and oficial.edicion!='lnv:d1f:'+edition:
+        oficial.invalidar('edition_changed')
     # El PID se descubre en los enlaces públicos de la edición actual, nunca queda fijado de un año viejo.
     home=oficial.cliente.pedir('https://lnv-web.dataproject.com/CompetitionHome.aspx',{'ID':edition},xml=True)
+    if not home:
+        oficial.no_disponible();return
     links=re.findall(r'CompetitionStandings\.aspx\?ID='+edition+r'(?:&amp;|&)PID=(\d+)',home or '')
     if len(set(links))!=1:
-        oficial.tabla={};oficial.historial=[];oficial.status.update(state='unknown_stage');return
+        oficial.invalidar('unknown_stage');return
     text=oficial.cliente.pedir('https://lnv-web.dataproject.com/CompetitionStandings.aspx',{'ID':edition,'PID':links[0]},xml=True)
-    if not oficial.cargar_lnv(text or '',edition):
-        oficial.tabla={};oficial.historial=[];oficial.status.update(state='rejected_schema_or_dates')
-        return
+    if not text:
+        oficial.no_disponible();return
+    previous=list(oficial.historial)
+    if not oficial.cargar_lnv(text,edition):
+        oficial.invalidar('rejected_schema_or_dates');return
+    # Conservar sólo parciales ya verificados que coinciden con la matriz actual.
+    def key(p):return (p['startTimestamp'],p['id_local'],p['id_visita'],p['puntos_local'],p['puntos_visita'])
+    expected={key(p) for p in oficial._lnv_expected}
+    oficial.historial=[p for p in previous if p.get('puntos_por_set') and key(p) in expected]
+    oficial.guardar_contexto(verified=True)
     oficial._lnv_pid=links[0]
     completar_lnv(oficial,edition,links[0],equipos=set())
 
@@ -353,7 +428,7 @@ def detalle_lnv(text,oficial,expected,now=None):
 def completar_lnv(oficial,edition,pid,equipos=None):
     text=oficial.cliente.pedir('https://lnv-web.dataproject.com/CompetitionMatches.aspx',{'ID':edition,'PID':pid},ttl=86400,xml=True)
     if not text:
-        oficial.historial=[];return
+        return # Un fallo de detalle no borra los resultados ya verificados.
     expected_rows=getattr(oficial,'_lnv_expected',oficial.historial)
     dates={p['startTimestamp'] for p in expected_rows}
     candidates={}
@@ -365,7 +440,7 @@ def completar_lnv(oficial,edition,pid,equipos=None):
         links=re.findall(r'MatchStatistics\.aspx\?mID=(\d+)&ID='+str(edition)+r'&CID=(\d+)&PID='+str(pid),prefix)
         if links:
             mid,cid=links[-1];candidates[mid]=(ts,cid)
-    output=[];new=0
+    output=list(oficial.historial);new=0
     for mid,(ts,cid) in candidates.items():
         params={'mID':mid,'ID':edition,'CID':cid,'PID':pid,'type':'LegList'}
         url='https://lnv-web.dataproject.com/MatchStatistics.aspx'
@@ -381,6 +456,7 @@ def completar_lnv(oficial,edition,pid,equipos=None):
             if expected['startTimestamp']!=ts:continue
             result=detalle_lnv(page or '',oficial,expected)
             if result:output.append(dict(result,id=oficial.fuente+'_'+mid))
-    oficial.historial=list({p['id']:p for p in output}.values())
+    oficial.historial=list({(p['startTimestamp'],p['id_local'],p['id_visita']):p for p in output}.values())
+    oficial.guardar_contexto()
     oficial.status.update(history=len(oficial.historial),state=(
         'verified_table_and_played_results' if oficial.historial else 'verified_table'))
