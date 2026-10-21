@@ -1,5 +1,7 @@
 # SportsAPI.app y cuota mensual de SportAPI.ai — 21/10/2026
 
+Actualización 21/10/2026: el pack de cuotas, contexto y seguimiento está documentado en [PACK_APROVECHAMIENTO.md](PACK_APROVECHAMIENTO.md), que tiene prioridad sobre las descripciones anteriores de esos componentes.
+
 ## Alcance
 
 Dos proveedores diferentes: SportsAPI.app es multideporte; SportAPI.ai continúa sólo para fútbol. La integración nueva utiliza exclusivamente SPORTSAPI_APP_API_KEY, agregada en Northflank. Nunca se copia a GitHub, logs, evidencia ni mensajes.

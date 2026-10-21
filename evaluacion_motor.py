@@ -101,13 +101,19 @@ def evaluar(decisions, outcomes, gap_days=7, block_days=28):
     for decision in decisions:
         if decision.get('decision') not in ('alert','discard','candidate','unevaluable') or not decision.get('pre_match'):
             continue
+        if decision.get('observed_at_utc',float('inf'))>=decision.get('kickoff_utc',0):continue
         old = latest.get(decision['event_key'])
-        # Una predicción por encuentro: la última capturada antes del comienzo.
-        if old is None or decision['observed_at_utc'] > old['observed_at_utc']:
-            latest[decision['event_key']] = decision
+        # Evaluar la primera alerta registrada; no ocultarla con descartes posteriores.
+        if old is None:
+            latest[decision['event_key']]=decision
+        elif decision['decision']=='alert':
+            if old['decision']!='alert' or decision['observed_at_utc']<old['observed_at_utc']:
+                latest[decision['event_key']]=decision
+        elif old['decision']!='alert' and decision['observed_at_utc']>old['observed_at_utc']:
+            latest[decision['event_key']]=decision
     dates = sorted(d['observed_at_utc'] for d in latest.values())
     origin = (dates[0]//86400)*86400 if dates else 0
-    stats = defaultdict(lambda: {'events':0,'resolved':0,'normal':0,'live_alerts':0,'live_wins':0,
+    stats = defaultdict(lambda: {'events':0,'resolved':0,'normal':0,'live_alerts':0,'live_wins':0,'live_evaluable':0,'live_ungraded':0,
                                  'shadow_alerts':0,'shadow_wins':0,'baseline_eligible':0,'baseline_wins':0,'paired_alerts':0,'paired_live_wins':0,'paired_baseline_wins':0,'dominated':0,
                                  'dominance_evaluable':0,'unresolved':0,'replay_errors':0,'replay_eligible':0,'unfavoured_decisions':0})
     blocks = defaultdict(lambda: {'events':0,'resolved':0,'live_alerts':0,'wins':0})
@@ -144,6 +150,8 @@ def evaluar(decisions, outcomes, gap_days=7, block_days=28):
         if is_alert:
             s['live_alerts']+=1
             s['live_wins']+=int(label['won'] is True)
+            s['live_evaluable']+=int(label['won'] is not None)
+            s['live_ungraded']+=int(label['won'] is None)
             block['live_alerts']+=1
             block['wins']+=int(label['won'] is True)
             if label['dominance'] is not None:
@@ -164,7 +172,7 @@ def evaluar(decisions, outcomes, gap_days=7, block_days=28):
                 s['paired_live_wins']+=int(label['won'] is True)
                 s['paired_baseline_wins']+=int(baseline_label['won'] is True)
     for s in stats.values():
-        s['live_win_wilson_95']=wilson(s['live_wins'],s['live_alerts'])
+        s['live_win_wilson_95']=wilson(s['live_wins'],s['live_evaluable'])
         s['resolved_fraction']=s['resolved']/s['events'] if s['events'] else None
     calendar_blocks=[]
     for (sport,period),row in sorted(blocks.items()):
@@ -176,6 +184,7 @@ def evaluar(decisions, outcomes, gap_days=7, block_days=28):
         calendar_blocks.append(dict(row,sport=sport,start_utc=start,train_cutoff_utc=cutoff,
                                     preceding_training_events=len(train)))
     return {'mode':'prospective_descriptive_and_shadow; no_auto_tuning', 'rules':CONFIG,
+            'selection':'first recorded pre-match alert; otherwise latest pre-match decision',
             'sports':dict(stats), 'calendar_blocks':calendar_blocks, 'gap_days':gap_days,
             'minimum_validation_note':'Las reglas candidatas están fijadas. No hay ajuste ni probabilidad calibrada; métricas con denominadores distintos no son comparables.',
             'old_ledger_imported':False}

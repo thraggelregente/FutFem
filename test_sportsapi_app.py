@@ -160,7 +160,7 @@ class QuotaTests(unittest.TestCase):
             quota=U.PresupuestoDiario('test_sapp',100,reserva=0)
             cache=Mock();cache.get.return_value=(False,None)
             response=SimpleNamespace(status_code=200,headers={'RateLimit-Remaining':'0'},content=b'{}',json=lambda:{'data':[]})
-            with patch.object(S,'API_KEY','test'),patch.object(S,'_disabled',False),patch.object(S,'_pausa',0),patch.object(S,'_state',{}),patch.object(S,'presupuesto',quota),patch.object(S,'_cache',cache),patch.object(S._ritmo,'esperar'),patch.object(S.P.actual,'permitido',return_value=True),patch.object(S.requests,'get',return_value=response) as get:
+            with patch.object(S,'_allowance',side_effect=lambda limit,burst:limit),patch.object(S,'API_KEY','test'),patch.object(S,'_disabled',False),patch.object(S,'_pausa',0),patch.object(S,'_state',{}),patch.object(S,'presupuesto',quota),patch.object(S,'_cache',cache),patch.object(S._ritmo,'esperar'),patch.object(S.P.actual,'permitido',return_value=True),patch.object(S.requests,'get',return_value=response) as get:
                 for i in range(40):S._get('/v2/fixtures',{'page':i},calendar=True)
                 self.assertIsNone(S._get('/v2/fixtures',{'page':41},calendar=True))
                 for i in range(60):S._get('/v2/teams/'+str(i)+'/fixtures')

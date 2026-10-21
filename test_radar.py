@@ -115,6 +115,7 @@ class RadarTests(unittest.TestCase):
         ev = evento("Equipo A")
         ev["local"]["id"], ev["visita"]["id"] = "2", "1"
         obs = evento("Rival Equipo A")
+        ev["torneo"] = obs["torneo"] = "League Women"
         obs["local"] = {"nombre": "Rival Equipo A", "id": "2"}
         obs["visita"] = {"nombre": "Equipo A", "id": "1"}
         ev["_observaciones"] = [obs]

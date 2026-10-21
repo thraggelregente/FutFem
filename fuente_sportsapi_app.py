@@ -25,7 +25,24 @@ _pausa=0
 _disabled=False
 _state=U.cargar_json('sportsapi_app_state_v1.json',{})
 if not isinstance(_state,dict):_state={}
-_metrics={'auth':'not_checked','calendar_verified':0,'histories_verified':0,'tables_verified':0}
+_metrics={'auth':'not_checked','calendar_verified':0,'histories_verified':0,'tables_verified':0,
+          'http_requests':0,'cache_responses':0,'paced_deferrals':0}
+_unique={kind:set() for kind in ('calendar','history_matches','tables')}
+
+
+def _unique_add(kind, values):
+    # Métricas de esta ejecución, acotadas; no son un archivo histórico.
+    _unique[kind].update(values)
+    if len(_unique[kind])>5000:
+        _unique[kind]=set(sorted(_unique[kind])[:5000])
+
+
+def _allowance(limit, burst, now=None):
+    now=time.time() if now is None else now
+    seconds=now%86400
+    # Todo el saldo se libera en la última hora; no se crea una reserva permanente.
+    return min(limit, burst+int((limit-burst)*seconds/(23*3600)))
+
 
 
 def disponible():return bool(API_KEY) and ACTIVO and not _disabled
@@ -37,17 +54,35 @@ def _day():return datetime.now(timezone.utc).date().isoformat()
 def _save():U.guardar_json('sportsapi_app_state_v1.json',_state)
 
 
-def _get(path,params=None,ttl=12*3600,calendar=False):
+def _get(path,params=None,ttl=12*3600,calendar=False,refresh=False):
     global _pausa,_disabled
     if not disponible():return None
     params=params or {}
     hit,data=_cache.get((path,params))
-    if hit:return data
+    cache_key=U.CachePersistente._clave((path,params))
+    if _state.get('retry_after',{}).get(cache_key,0)>time.time():return data if hit else None
+    if hit and (not refresh or data is None):
+        _metrics['cache_responses']+=1
+        return data
     if _state.get('day')!=_day():
         _state.update(day=_day(),calendar_calls=0)
+    presupuesto.restantes()
+    if presupuesto.usadas>=_allowance(100,12) or calendar and _state.get('calendar_calls',0)>=_allowance(40,6):
+        _metrics['paced_deferrals']+=1
+        return data if hit else None
     if (time.time()<_pausa or not P.actual.permitido(FUENTE) or not presupuesto.puede_gastar()
-            or calendar and _state.get('calendar_calls',0)>=40):return None
+            or calendar and _state.get('calendar_calls',0)>=40):return data if hit else None
+    def failure():
+        # Un refresco fallido no destruye la última página válida ni se repite cada ciclo.
+        retries=_state.setdefault('retry_after',{})
+        for key in list(retries):
+            if retries[key]<=time.time():retries.pop(key)
+        retries[cache_key]=time.time()+3600
+        if not hit:_cache.set((path,params),None,ttl=3600)
+        _save()
+        return data if hit else None
     _ritmo.esperar()
+    _metrics['http_requests']+=1
     presupuesto.registrar() # también cuenta fallos de red, de forma conservadora
     if calendar:_state['calendar_calls']=_state.get('calendar_calls',0)+1
     _save()
@@ -60,21 +95,25 @@ def _get(path,params=None,ttl=12*3600,calendar=False):
         if response.status_code==429:
             # Retry-After distingue cuota diaria de ritmo por minuto; no confundir
             # RateLimit-Remaining (minuto) con el saldo diario.
-            wait=max(1,int(response.headers.get('Retry-After','60')))
+            try:wait=max(1,int(response.headers.get('Retry-After','60')))
+            except (ValueError,TypeError):wait=60
             _pausa=time.time()+wait
             P.actual.paused[FUENTE]=_pausa
             return None
         if response.status_code!=200 or len(response.content)>8_000_000:
-            _cache.set((path,params),None,ttl=3600);return None
-        data=response.json()
-        if not isinstance(data,dict) or 'data' not in data:return None
+            return failure()
+        fresh=response.json()
+        if not isinstance(fresh,dict) or 'data' not in fresh:return failure()
+        data=fresh
         _metrics['auth']='verified'
         _cache.set((path,params),data,ttl=ttl)
+        if calendar and path=='/v2/fixtures':
+            _state.setdefault('refreshed',{})[U.CachePersistente._clave((path,params))]=time.time()
+            _save()
         return data
     except (requests.RequestException,ValueError,TypeError):
-        _cache.set((path,params),None,ttl=3600)
         U.log('[sportsapi_app] respuesta no disponible; sin reintento inmediato')
-        return None
+        return failure()
 
 
 def _id(value):return type(value) is int and value>0
@@ -138,7 +177,8 @@ def _catalogo():
 
 def deportes_ciclo(sports):
     # Cambia el orden de descubrimiento sin privilegiar una disciplina fija.
-    shift=int(time.time()//(6*3600))%len(sports)
+    if not sports:return []
+    shift=int(time.time()//900)%len(sports)
     return sports[shift:]+sports[:shift]
 
 
@@ -148,13 +188,20 @@ def obtener_eventos(sport):
     days=[(datetime.now(timezone.utc)+timedelta(days=n)).date().isoformat() for n in (0,1)]
     cursors=_state.setdefault('cursors',{})
     pages=_state.setdefault('pages',{})
+    refreshed=_state.setdefault('refreshed',{})
+    for ref in list(refreshed):
+        if time.time()-refreshed[ref]>2*86400:refreshed.pop(ref,None)
     for key in list(pages):
         if key[-10:] not in days:pages.pop(key,None);cursors.pop(key,None)
     for day in days:
         key=sport+'|'+day
-        page=cursors.get(key,0)
+        first_params={'sport':DEPORTES[sport],'date':day,'page':0}
+        first_key=U.CachePersistente._clave(('/v2/fixtures',first_params))
+        # Refrescar la cabecera antes de seguir profundizando un calendario viejo.
+        first_due=time.time()-refreshed.get(first_key,0)>=6*3600
+        page=0 if first_due else cursors.get(key,0)
         params={'sport':DEPORTES[sport],'date':day,'page':page}
-        data=_get('/v2/fixtures',params,calendar=True)
+        data=_get('/v2/fixtures',params,ttl=24*3600,calendar=True,refresh=first_due)
         meta=(data or {}).get('meta') or {}
         if data and (meta.get('sport'),meta.get('date'),meta.get('page'))==(DEPORTES[sport],day,page):
             pages[key]=sorted(set(pages.get(key,[])+[page]))
@@ -170,6 +217,7 @@ def obtener_eventos(sport):
                 if event and event.get('tipo_estado')=='pre':output[event['id']]=event
     _save()
     _metrics['calendar_verified']+=len(output)
+    _unique_add('calendar',output)
     return list(output.values())
 
 
@@ -185,6 +233,7 @@ def historial_equipo(evento,lado):
         if (row and 'fecha' in row and row['contexto_competicion']==evento.get('contexto_competicion')
                 and 'sapp:'+str(pid) in (row['id_local'],row['id_visita'])):output.append(row)
     _metrics['histories_verified']+=int(bool(output))
+    _unique_add('history_matches',(p['id'] for p in output))
     return sorted({p['id']:p for p in output}.values(),key=lambda p:p['fecha'],reverse=True)[:10]
 
 
@@ -219,12 +268,16 @@ def tabla_partido(evento):
     chosen=overall if len(overall)==1 else [t for _,t in candidates]
     if len(chosen)!=1:return None,0
     _metrics['tables_verified']+=1
+    _unique_add('tables',[str((league,season))])
     return chosen[0],len(chosen[0])
 
 
 def resultados_evaluacion(evento):
     from resultados_evaluacion import de_historial
-    if evento.get('fuente')!=FUENTE or not _id(evento.get('sportsapi_app_id')):return []
+    observations=[o for o in evento.get('_observaciones') or [evento] if o.get('fuente')==FUENTE]
+    if len(observations)!=1:return []
+    evento=observations[0]
+    if not _id(evento.get('sportsapi_app_id')):return []
     raw=_get('/v2/fixtures/'+str(evento.get('sportsapi_app_id')),ttl=3600)
     row=normalizar((raw or {}).get('data'),evento.get('deporte'))
     result=de_historial(row,evento['deporte'],FUENTE) if row and 'fecha' in row else None
@@ -269,12 +322,17 @@ def perfil_tenis(evento,lado):
     if not output:return None
     rows=sorted(output.values(),key=lambda p:p['ts'],reverse=True)
     _metrics['histories_verified']+=1
+    _unique_add('history_matches',output)
     return {'fuente':'SportsAPI.app historial','partidos':rows,'recientes':rows[:10],
             'muestras_2anios':len(rows),'ventana_historial_dias':90,'cobertura_completa_2anios':False,
             'experiencia_carrera_wta':None,'mejor_ranking':None,'servicio':None}
 
 
 def estado_contexto():
-    return dict(_metrics,calendar_requests_day=_state.get('calendar_calls',0) if _state.get('day')==_day() else 0,
+    return dict(_metrics,metrics_scope='since_process_start; verified counters count repeated validations',
+                unique_observed={k:len(v) for k,v in _unique.items()},unique_metrics_cap=5000,
+                daily_allowance_now=_allowance(100,12),calendar_allowance_now=_allowance(40,6),
+                pacing='UTC day; initial burst then gradual release; fully available at 23:00 UTC',
+                calendar_requests_day=_state.get('calendar_calls',0) if _state.get('day')==_day() else 0,
                 calendar_limit_day=40,quota_shared_across_sports=True,
                 integrated_sports=DEPORTES_ACTIVOS,authenticated_data_verified=_metrics['auth']=='verified')

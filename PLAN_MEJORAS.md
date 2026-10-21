@@ -1,5 +1,7 @@
 # Investigación y especificación de las cinco mejoras
 
+Actualización 21/10/2026: el pack de cuotas, contexto y seguimiento está documentado en [PACK_APROVECHAMIENTO.md](PACK_APROVECHAMIENTO.md), que tiene prioridad sobre las descripciones anteriores de esos componentes.
+
 Fecha: 14/10/2026. Estado histórico: **propuesta original previa a implementación**. La implementación autorizada posterior y sus límites actuales están en [OPERACION_EVALUACION.md](OPERACION_EVALUACION.md). Esta revisión sólo despliega mejoras de presentación/entrega de mensajes. No activa auditoría, recopilación posterior de resultados, calibración, reparto nuevo de cuota ni recomendaciones de apuestas.
 
 ## Hallazgos del proyecto actual

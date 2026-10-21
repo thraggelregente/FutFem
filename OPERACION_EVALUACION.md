@@ -1,5 +1,7 @@
 # Diario, cobertura y evaluación del radar
 
+Actualización 21/10/2026: el pack de cuotas, contexto y seguimiento está documentado en [PACK_APROVECHAMIENTO.md](PACK_APROVECHAMIENTO.md), que tiene prioridad sobre las descripciones anteriores de esos componentes.
+
 Implementado el 14/10/2026. Revisión de producción: `radar-evaluation-v2`.
 
 ## Qué está funcionando

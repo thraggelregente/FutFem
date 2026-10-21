@@ -92,7 +92,10 @@ class Planificador:
     def resumen(self):
         calls = sum(v for k,v in self.stats.items() if ':http:' in k)
         return {'mode': 'active_rotation_and_shared_host_pauses; task_allocation_shadow',
-                'http_requests': calls, 'http_by_source_status': dict(self.stats),
+                'http_requests': calls,
+                'http_by_source_status': {k:v for k,v in self.stats.items() if ':http:' in k},
+                'cache_hits': {k:v for k,v in self.stats.items() if k.endswith(':cache_hit')},
+                'metrics_scope':'current sweep; HTTP attempts and cache hits are separate',
                 'paused_sources': sorted(k for k in self.paused if not self.permitido(k)),
                 'shadow_tasks': self.shadow[:20], 'exploration_fraction': 0.2}
 
