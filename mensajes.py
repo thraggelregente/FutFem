@@ -7,6 +7,7 @@ DEPORTES = {"Soccer": ("⚽", "Fútbol"), "Basketball": ("🏀", "Básquet"),
             "Handball": ("🤾", "Handball"), "Volleyball": ("🏐", "Vóley"), "Rugby": ("🏉", "Rugby"),
             "Softball": ("🥎", "Softball"), "Lacrosse": ("🥍", "Lacrosse"), "Field Hockey": ("🏑", "Hockey sobre césped"), "Cricket": ("🏏", "Cricket")}
 FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
+           "tennis_api": "Tennis API", "Tennis API": "Tennis API",
            "cricsheet": "Cricsheet", "balldontlie": "BALLDONTLIE",
            "sportapi": "SportAPI.ai",
            "worldrugby": "World Rugby",
@@ -33,6 +34,10 @@ def fuentes_legibles(fuentes):
 def evidencia_clara(texto, local, visita, destacado):
     """Aclarar evidencia existente sin agregar puntos ni inferencias deportivas."""
     otro = visita if destacado == local else local
+    m = re.fullmatch(r'Ranking (.+): (\d+); (.+); fecha (.+)', texto)
+    if m:
+        jugadora, ranking, fuente, fecha = m.groups()
+        return f'{jugadora}: puesto #{ranking}. Fuente: {fuente}. Ranking del {fecha}.'
     m = re.fullmatch(r"Triangulación vs (.+): ganó por ([+-]?\d+(?:\.\d+)?) y el rival cayó por ([+-]?\d+(?:\.\d+)?) \((\d+) rival/es en común\)", texto)
     if m:
         rival, gano, perdio, n = m.groups()
@@ -91,15 +96,17 @@ def evaluacion_clara(texto):
     if not m:
         return "<b>Evaluación:</b> " + html.escape(str(texto))
     magnitud, calidad, familias = m.groups()
-    salida = (f"<b>Magnitud del desnivel:</b> {html.escape(magnitud)}.\n"
-              f"<b>Respaldo de los datos:</b> {html.escape(calidad)} según las reglas actuales del motor.")
+    significado = ('Faltan datos comparables para confirmar la ventaja.' if calidad.lower() == 'limitada'
+                   else 'Hay contexto deportivo suficiente según las reglas del detector; no es una probabilidad de acierto.')
+    salida = (f"<b>Magnitud del desnivel:</b> {html.escape(magnitud.lower())}.\n"
+              f"<b>Respaldo de los datos:</b> {html.escape(calidad)}. {significado}")
     if familias:
         salida += (f"\n{familias} familia(s) de señales. Pueden compartir información; "
                    "no equivalen a pruebas independientes.")
     return salida
 
 
-def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, evaluacion, fuentes, tipo):
+def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, evaluacion, fuentes, tipo, analisis=None):
     esc = lambda v: html.escape(str(v))
     emoji, nombre = DEPORTES.get(deporte, ("🏅", deporte))
     candidato = "CANDIDATO" in tipo.upper()
@@ -108,6 +115,25 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
         titulo = "Asimetría · evaluación experimental"
     etiqueta = "Jugadora mejor posicionada" if candidato and "RANKING" in tipo.upper() else "Lado a evaluar" if candidato else "Jugadora con ventaja detectada" if deporte == "Tennis" else "Equipo con ventaja detectada"
     detalles = list(dict.fromkeys(evidencia_clara(str(d), local, visita, nombre_destacado) for d in evidencias or []))
+    analisis = analisis or {}
+    detalles += [str(d) for d in analisis.get('evidencia',[]) if str(d) not in detalles]
+    lectura = (f"{nombre_destacado} tiene mejor ranking. La diferencia todavía no está confirmada con suficiente contexto deportivo."
+               if candidato and 'RANKING' in tipo.upper() else
+               f"Las señales disponibles apuntan hacia {nombre_destacado}. La magnitud describe el desnivel detectado, no un marcador previsto.")
+    recomendaciones=[]
+    for pick in analisis.get('selecciones',[]):
+        recomendaciones.append('• <b>'+esc(pick['mercado'])+': '+esc(pick['seleccion'])+'</b>\n'+esc(pick['motivo']))
+    if not recomendaciones:
+        recomendaciones=['<b>Sin apuesta recomendada por ahora.</b>']
+    recomendaciones.append(esc(analisis.get('criterio') or 'Esta alerta no tiene una selección de mercado respaldada por datos suficientes.'))
+    if analisis.get('selecciones'):
+        recomendaciones.append('Orientación deportiva, sin cuotas ni rentabilidad calculada. No se propone resultado exacto ni tamaño de apuesta.')
+    faltantes=list(dict.fromkeys(analisis.get('faltantes',[])))
+    cobertura = [d for d in detalles if d.startswith(('Historial oficial registrado','Historial registrado en las fuentes',
+                'Tennis API:')) or ': contexto Tennis API WTA/ITF;' in d]
+    detalles = [d for d in detalles if d not in cobertura]
+    cobertura_txt = ('\n\n<b>Cobertura y límites</b>\n'+'\n'.join('• '+esc(d) for d in cobertura)) if cobertura else ''
+    limites=('\n\n<b>Qué falta comprobar</b>\n'+'\n'.join('• '+esc(d) for d in faltantes)) if faltantes else ''
     credito = '\n<a href="https://sportscore.com/">Powered by SportScore</a>' if any("sportscore" in str(f).lower() for f in fuentes or []) else ""
     if any("cricsheet" in str(f).lower() for f in fuentes or []):
         credito += '\nHistorial resumido de <a href="https://cricsheet.org/">Cricsheet</a> · <a href="https://opendatacommons.org/licenses/by/1.0/">ODC-By</a>'
@@ -116,11 +142,11 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
         f"<b>{esc(local)} vs {esc(visita)}</b>\n"
         f"{esc(torneo)}\n"
         f"🕒 {esc(hora)}\n\n"
+        f"<b>Lectura rápida</b>\n{esc(lectura)}\n\n"
         f"<b>{etiqueta}:</b> {esc(nombre_destacado)}\n"
         f"{evaluacion_clara(evaluacion)}\n\n"
-        "<b>Qué respalda la alerta</b>\n" + "\n".join("• " + esc(d) for d in detalles) +
-        "\n\n<b>Recomendaciones</b>\nPendientes de evaluación. Esta alerta identifica una diferencia deportiva; "
-        "todavía no valida una apuesta, un hándicap ni un resultado exacto." +
+        "<b>Datos que encontramos</b>\n" + "\n".join("• " + esc(d) for d in detalles) + limites +
+        "\n\n<b>Recomendaciones</b>\n"+'\n'.join(recomendaciones) + cobertura_txt +
         f"\n\n<i>Fuentes: {esc(fuentes_legibles(fuentes))}</i>{credito}"
     )
 

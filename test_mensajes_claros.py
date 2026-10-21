@@ -52,7 +52,7 @@ class MensajesClarosTests(unittest.TestCase):
             self.assertIn(palabra, texto)
         self.assertIn("Magnitud del desnivel", texto)
         self.assertIn("Respaldo de los datos", texto)
-        self.assertIn("Pendientes de evaluación", texto)
+        self.assertIn("Sin apuesta recomendada por ahora", texto)
 
     def test_elo_visitante_no_invierte_muestras_de_local_y_visita(self):
         texto = S.evidencia_clara("Elo: Visitante 1600 vs 1500 (ajuste de localía; 5/9 partidos en el libro)", "Local A", "Visita B", "Visita B")

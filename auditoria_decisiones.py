@@ -8,7 +8,7 @@ import zlib
 from datetime import datetime, timezone
 import utilidades as U
 
-REVISION = 'tennis-volley-context-v1'
+REVISION = 'sport-context-v1'
 TTL = 90 * 86400
 MAX_RECORDS = max(10000, min(50000, int(os.environ.get('AUDIT_MAX_RECORDS', '30000'))))
 MAX_BYTES = 100_000_000

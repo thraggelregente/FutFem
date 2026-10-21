@@ -25,6 +25,8 @@ import requests
 
 import utilidades as U
 import mensajes
+import analisis_deportivo
+import motor_voley
 import auditoria_decisiones as auditoria
 import cobertura_radar as cobertura
 import resultados_evaluacion as resultados
@@ -64,7 +66,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         payload = {
             "service": "radar-femenino",
-            "revision": "international-source-depth-v1",
+            "revision": "sport-context-recommendations-v1",
             "coverage": ESTADO.get("coverage", {}),
             "audit": ESTADO.get("audit", {}),
             "outcome_evaluation": ESTADO.get("outcome_evaluation", {}),
@@ -291,12 +293,12 @@ def enviar_telegram(mensaje_html: str) -> bool:
 
 
 def enviar_alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base, favorito, confianza="Media",
-                  fuentes=None, tipo="MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA"):
+                  fuentes=None, tipo="MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA", analisis=None):
     if motor_mismatches is None:
         return False
     nom_fav = nom_loc if favorito == motor_mismatches.LOCAL else nom_vis
     mensaje = mensajes.alerta(deporte, torneo, nom_loc, nom_vis, hora_txt, alertas_base,
-                              nom_fav, confianza, fuentes, tipo)
+                              nom_fav, confianza, fuentes, tipo, analisis=analisis)
     entregado = enviar_telegram(mensaje)
     U.log(
         f"[alerta] {deporte}: {nom_loc} vs {nom_vis}; ventaja={nom_fav}; "
@@ -764,7 +766,7 @@ def _procesar_evento(ev, st, ahora_ts):
                 f"Magnitud: {'fuerte' if resultado_t['puntaje'] >= 4 else 'moderada'}; calidad: {resultado_t['calidad']}",
                 fuentes=list(ev.get("_fuentes_detectadas") or []) + resultado_t["fuentes"] +
                         list({j.get("ranking_fuente") for j in (local, visita) if j.get("ranking_fuente")}),
-                tipo=resultado_t["tipo"])
+                tipo=resultado_t["tipo"], analisis=resultado_t.get('analisis_deportivo'))
             st["alertas"] += 1
             _decision(ev, "alert", "threshold_met", inputs_t, resultado_t, {"any_complete": entregado, "roles": getattr(enviar_telegram, "ultima_entrega", {})})
             if entregado:
@@ -781,6 +783,8 @@ def _procesar_evento(ev, st, ahora_ts):
     else:
         forma_loc = _historial_equipo(ev, "local")
         forma_vis = _historial_equipo(ev, "visita")
+    if deporte == 'Volleyball':
+        forma_loc, forma_vis = (motor_voley.historial_sets(rows) for rows in (forma_loc,forma_vis))
     forma_loc = motor_mismatches.historial_valido(forma_loc, id_loc)
     forma_vis = motor_mismatches.historial_valido(forma_vis, id_vis)
     if not forma_loc or not forma_vis:
@@ -802,6 +806,8 @@ def _procesar_evento(ev, st, ahora_ts):
     if ev.get("fuente") == "sportscore" and fuente_sportscore:
         # El motor deduplica los encuentros presentes también en la forma.
         h2h_raw = list(h2h_raw or []) + fuente_sportscore.h2h_partido(ev)
+    if deporte == 'Volleyball':
+        h2h_raw = motor_voley.historial_sets(h2h_raw)
     h2h = motor_mismatches.analizar_h2h_extendido(h2h_raw, id_loc, id_vis)
     calendario_util = bool(forma_loc and forma_vis and all(p.get("_calendario_completo") for p in forma_loc + forma_vis))
     datos_extra = {
@@ -826,6 +832,8 @@ def _procesar_evento(ev, st, ahora_ts):
                 "h2h": h2h_raw, "tabla": tabla, "inputs_observed_at_utc": ahora_ts}
     cobertura.actual.contexto(clave, forma_loc, forma_vis, h2h_raw, tabla)
     resultado = motor_mismatches.evaluar_mismatch(**motor_kwargs)
+    inputs_e['analisis_deportivo'] = analisis_deportivo.equipos(ev, resultado, forma_loc, forma_vis, ahora_ts)
+    cobertura.actual.contextos[clave]['recommendations'] = inputs_e['analisis_deportivo']
     _decision(ev, "alert" if resultado["hay_mismatch"] else "discard", resultado.get("motivo_descarte") or "threshold_met", inputs_e, resultado)
 
     if resultado["hay_mismatch"]:
@@ -859,6 +867,7 @@ def _procesar_evento(ev, st, ahora_ts):
             f"{resultado.get('grupos_independientes', 1)} familia(s) de señales, sin independencia garantizada",
             fuentes=fuentes_alerta,
             tipo="ASIMETRÍA EXPERIMENTAL" if deporte in DEPORTES_SIN_CUPO_COMERCIAL else "MISMATCH DEPORTIVO FEMENINO — ASIMETRÍA",
+            analisis=inputs_e['analisis_deportivo'],
         )
         st["alertas"] += 1
         _decision(ev, "alert", "threshold_met", inputs_e, resultado, {"any_complete": entregado, "roles": getattr(enviar_telegram, "ultima_entrega", {})})
@@ -1157,6 +1166,11 @@ def ejecutar_barrido_radar():
         if not all(U.participante_definido((ev.get(lado) or {}).get("nombre")) for lado in ("local", "visita")):
             st["sin_datos"] += 1
             _decision(ev, "unevaluable", "undefined_participant")
+            continue
+        if (ev.get("deporte") == "Tennis"
+                and any(x in U.normalizar(str(ev.get('torneo',''))+' '+str(ev.get('modalidad',''))).split()
+                        for x in ('doubles','dobles','srl','simulated'))):
+            _decision(ev, 'discard', 'tennis_unsupported_format')
             continue
         if (ev.get("deporte") == "Tennis"
                 and not all((ev.get(lado) or {}).get("ranking") for lado in ("local", "visita"))

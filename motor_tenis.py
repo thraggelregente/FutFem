@@ -6,6 +6,58 @@ del historial, cero observaciones significa desconocido, no jugadora amateur.
 import time
 
 import motor_mismatches as M
+import analisis_deportivo as A
+import utilidades as U
+
+
+def _recientes_verificados(perfil, ahora):
+    salida = {}
+    for p in (perfil or {}).get('partidos', []):
+        ts = p.get('ts')
+        if not isinstance(ts,(int,float)) or type(p.get('gano')) is not bool:
+            continue
+        # La semana no acredita que el partido ya acabó durante esa misma semana.
+        disponible = ts + (7*86400 if p.get('fecha_precision') == 'semana del torneo' else 0)
+        if not ahora-120*86400 <= ts < ahora or disponible >= ahora:
+            continue
+        if p.get('estado_resultado') not in (None, 'normal'):
+            continue
+        rival = U.normalizar(p.get('rival') or '')
+        if rival:
+            salida.setdefault((ts,rival,str(p.get('torneo')),str(p.get('round'))),p)
+    return sorted(salida.values(), key=lambda p:p['ts'], reverse=True)
+
+
+def _cruces(pf, pr, nombre_f, nombre_r, ahora):
+    a, b = _recientes_verificados(pf,ahora), _recientes_verificados(pr,ahora)
+    nf, nr = U.normalizar(nombre_f), U.normalizar(nombre_r)
+    directos = {}
+    conflicto = False
+    # Una sola perspectiva para contar cruces: las fechas de dos proveedores
+    # pueden ser exactas o semana de torneo y no acreditan dos partidos distintos.
+    propios=[p for p in a if U.normalizar(p['rival']) == nr]
+    perspectivas=((propios,nr,False),) if propios else ((b,nf,True),)
+    for rows, rival, invertido in perspectivas:
+        for p in rows:
+            if U.normalizar(p['rival']) != rival:
+                continue
+            key=(p['ts'],str(p.get('torneo')),str(p.get('round')))
+            gano = not p['gano'] if invertido else p['gano']
+            if key in directos and directos[key] != gano:
+                conflicto = True
+            directos[key] = gano
+    latest=[]
+    for rows in (a,b):
+        index={}
+        for p in rows:
+            key=U.normalizar(p['rival'])
+            if key not in (nf,nr):index.setdefault(key,p['gano'])
+        latest.append(index)
+    shared=set(latest[0]) & set(latest[1])
+    comunes={'favor':sum(latest[0][k] and not latest[1][k] for k in shared),
+             'contra':sum(latest[1][k] and not latest[0][k] for k in shared),'total':len(shared)}
+    h2h={'favor':sum(directos.values()),'contra':sum(not v for v in directos.values()),'conflicto':conflicto}
+    return h2h, comunes
 
 
 def _banda(rank):
@@ -21,6 +73,8 @@ def _comparar(perfil_f, perfil_r, superficie=None, ahora=None):
     for perfil in (perfil_f, perfil_r):
         lista = [p for p in (perfil or {}).get("partidos", [])
                  if ahora - (365 if superficie else 120) * 86400 <= p["ts"] <= ahora
+                 and p['ts'] + (7*86400 if p.get('fecha_precision') == 'semana del torneo' else 0) < ahora
+                 and type(p.get('gano')) is bool and p.get('estado_resultado') in (None,'normal')
                  and (not superficie or p.get("superficie", "").lower() == superficie.lower())
                  and _banda(p.get("ranking_rival")) is not None]
         listas.append(lista)
@@ -61,6 +115,10 @@ def _novata_documentada(perfil):
 
 
 def evaluar(ev, perfiles=None, ahora=None):
+    ahora = time.time() if ahora is None else ahora
+    modalidad = U.normalizar(str(ev.get('torneo',''))+' '+str(ev.get('modalidad','')))
+    if any(x in modalidad.split() for x in ('doubles','dobles','srl','simulated')):
+        return {'alertar':False,'motivo':'modalidad no compatible con individuales reales','puntaje':0}
     perfiles = perfiles or {}
     a, b = ev.get("local") or {}, ev.get("visita") or {}
     hay, detalle, fav, puntos = M.evaluar_mismatch_tenis(a.get("nombre"), b.get("nombre"), a.get("ranking"), b.get("ranking"))
@@ -112,6 +170,22 @@ def evaluar(ev, perfiles=None, ahora=None):
             evidencia.append(f"{nombre}: contexto Tennis API WTA/ITF; no demuestra carrera completa ni condición amateur.")
     forma = _comparar(pf, pr, ahora=ahora)
     superficie = _comparar(pf, pr, ev.get("superficie"), ahora=ahora) if ev.get("superficie") else None
+    h2h, comunes = _cruces(pf, pr, jug_f.get('nombre',''), jug_r.get('nombre',''), ahora)
+    faltantes = []
+    if forma is None:
+        faltantes.append('Forma comparable: faltan al menos cuatro resultados por jugadora frente a una misma banda de ranking rival.')
+    if not ev.get('superficie'):
+        faltantes.append('Superficie del partido sin confirmar en las fuentes consultadas.')
+    elif superficie is None:
+        faltantes.append('Superficie: no hay una muestra comparable de al menos ocho partidos por jugadora.')
+    if h2h['favor']+h2h['contra']:
+        evidencia.append(f"H2H en los últimos 120 días: {jug_f.get('nombre')} {h2h['favor']} victorias; {jug_r.get('nombre')} {h2h['contra']}. Solo cruces verificables, sin duplicar observaciones.")
+    else:
+        faltantes.append('H2H reciente: no se encontraron cruces verificables en los últimos 120 días.')
+    if comunes['total']:
+        evidencia.append(f"Rivales comunes en 120 días: {comunes['total']}; {comunes['favor']} comparaciones favorables a {jug_f.get('nombre')} y {comunes['contra']} a {jug_r.get('nombre')}. Se usa el último resultado frente a cada rival; no equivalen a rivales del mismo nivel actual.")
+    else:
+        faltantes.append('Rivales comunes: no hay resultados compartidos verificables en los últimos 120 días.')
     apoyo = 0
     contradiccion = False
     for nombre, res in (("Forma frente a bandas comparables de rivales", forma), ("Superficie oficial " + str(ev.get("superficie")), superficie)):
@@ -136,8 +210,15 @@ def evaluar(ev, perfiles=None, ahora=None):
     asimetria = experiencia_senal or (contexto and apoyo > 0 and puntos >= 4)
     if not contexto and not experiencia_senal:
         evidencia.append("Contexto reciente insuficiente: candidato por ranking, sin confirmar superioridad deportiva.")
-    return {"alertar": puntos >= 2, "favorito": fav, "puntaje": puntos, "evidencia": evidencia,
+    resultado = {"alertar": puntos >= 2, "favorito": fav, "puntaje": puntos, "evidencia": evidencia,
             "tipo": "ASIMETRÍA TENIS FEMENINO" if asimetria else "CANDIDATO TENIS FEMENINO — BRECHA DE RANKING",
             "calidad": "Documentada, con límites de cobertura" if asimetria else "Limitada",
             "fuentes": sorted({p.get("fuente", "historial sin atribución") for p in (pf,pr) if p} |
                               {"Tennis API historial WTA/ITF" for p in (pf,pr) if p and p.get("complemento_tennis_api")})}
+    analisis = A.tenis(resultado, forma, superficie, h2h, comunes, faltantes)
+    if h2h['conflicto'] or (h2h['contra'] >= 2 and h2h['favor'] == 0) or comunes['contra'] >= 2:
+        analisis.update(estado='sin_recomendacion', selecciones=[], criterio='Los cruces o los rivales comunes aportan datos contradictorios; no se selecciona un mercado.')
+    for pick in analisis['selecciones']:
+        pick['seleccion'] = jug_f.get('nombre')
+    resultado['analisis_deportivo'] = analisis
+    return resultado
