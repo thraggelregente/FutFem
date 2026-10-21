@@ -106,6 +106,19 @@ def evaluacion_clara(texto):
     return salida
 
 
+def historial_claro(texto):
+    m = re.fullmatch(r'Historial (?:oficial registrado|registrado en las fuentes consultadas) en los últimos dos años: (.+) (\d+) partidos; (.+) (\d+) partidos\. No equivale necesariamente a toda su carrera\. Las fechas identifican la semana del torneo, no el día de cada partido\.', texto)
+    if m:
+        a, n, b, k = m.groups()
+        return (f'Encontramos {n} resultados de {a} y {k} de {b} en el período consultado de dos años. '
+                'El registro puede estar incompleto. Son resultados guardados, no necesariamente los utilizados para comparar este partido. '
+                'Parte del historial indica la semana del torneo, no el día exacto: no permite calcular con precisión los días de descanso.')
+    m = re.fullmatch(r'(.+): contexto Tennis API WTA/ITF; no demuestra carrera completa ni condición amateur\.', texto)
+    if m:
+        return f'{m[1]}: Tennis API aporta resultados WTA/ITF, con cobertura parcial. La cantidad encontrada no permite concluir si una jugadora es amateur.'
+    return texto
+
+
 def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, evaluacion, fuentes, tipo, analisis=None):
     esc = lambda v: html.escape(str(v))
     emoji, nombre = DEPORTES.get(deporte, ("🏅", deporte))
@@ -132,8 +145,9 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
     cobertura = [d for d in detalles if d.startswith(('Historial oficial registrado','Historial registrado en las fuentes',
                 'Tennis API:')) or ': contexto Tennis API WTA/ITF;' in d]
     detalles = [d for d in detalles if d not in cobertura]
-    cobertura_txt = ('\n\n<b>Cobertura y límites</b>\n'+'\n'.join('• '+esc(d) for d in cobertura)) if cobertura else ''
-    limites=('\n\n<b>Qué falta comprobar</b>\n'+'\n'.join('• '+esc(d) for d in faltantes)) if faltantes else ''
+    cobertura_txt = ('\n\n<b>Historial disponible</b>\n'+'\n'.join('• '+esc(historial_claro(d)) for d in cobertura)) if cobertura else ''
+    titulo_faltantes = 'Utilidad para este partido · qué faltó' if deporte == 'Tennis' else 'Qué falta comprobar'
+    limites=('\n\n<b>'+titulo_faltantes+'</b>\n'+'\n'.join('• '+esc(d) for d in faltantes)) if faltantes else ''
     credito = '\n<a href="https://sportscore.com/">Powered by SportScore</a>' if any("sportscore" in str(f).lower() for f in fuentes or []) else ""
     if any("cricsheet" in str(f).lower() for f in fuentes or []):
         credito += '\nHistorial resumido de <a href="https://cricsheet.org/">Cricsheet</a> · <a href="https://opendatacommons.org/licenses/by/1.0/">ODC-By</a>'
