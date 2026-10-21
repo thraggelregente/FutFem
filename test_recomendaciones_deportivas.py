@@ -95,9 +95,10 @@ class RecomendacionesTests(unittest.TestCase):
                       r['evidencia'],'Leylah Annie Fernandez','Magnitud: moderada; calidad: Limitada',
                       ['tennis_api','Tennis API historial WTA/ITF','WTA oficial','Tennis API; ranking fechado'],r['tipo'],r['analisis_deportivo'])
         self.assertIn('Sin apuesta recomendada',text)
-        self.assertIn('Cobertura y límites',text)
+        self.assertIn('Historial disponible',text)
         self.assertIn('puesto #30',text)
-        self.assertIn('107 partidos',text)
+        self.assertIn('107 resultados',text)
+        self.assertIn('Utilidad para este partido',text)
         self.assertIn('Fuentes: Tennis API · WTA',text)
         self.assertNotIn('Pendientes de evaluación',text)
 
