@@ -16,7 +16,8 @@ def construir(modules, espn_activo=True):
            'lvf':'tablas e historial oficial Serie A1 femenina, edición actual',
            'lnv':'tablas e historial oficial D1F, edición descubierta desde web femenina',
            'tauron':'calendario, tabla e historial TAURON Liga Kobiet, edición actual reconciliada',
-           'tennis_api':'calendario, ranking fechado y complemento WTA/ITF; profundidad parcial'}
+           'tennis_api':'calendario, ranking fechado y complemento WTA/ITF; profundidad parcial',
+           'sportsapi_app':'calendario femenino, historial y tablas por edición; 100 requests diarios compartidos; acceso real en health'}
     output={sport:{'configured_sources':[], 'calendar_sources':[], 'context_only_sources':[], 'scopes':{}} for sport in sports}
     for name,module in modules.items():
         if not module or name=='espn' and not espn_activo:

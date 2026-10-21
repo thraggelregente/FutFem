@@ -158,7 +158,11 @@ def evaluar(ev, perfiles=None, ahora=None):
                          f"{j.get('ranking_fuente') or 'sin fuente'}; fecha {j.get('ranking_fecha') or 'sin fecha'}")
     if pf and pr:
         prefix = "Historial oficial registrado" if all((p or {}).get("fuente", "WTA historial oficial")=="WTA historial oficial" for p in (pf,pr)) else "Historial registrado en las fuentes consultadas"
-        evidencia.append(f"{prefix} en los últimos dos años: {jug_f.get('nombre')} "
+        if any(p.get('ventana_historial_dias')==90 for p in (pf,pr)):
+            evidencia.append('Historial disponible: '+'; '.join(
+                f"{j.get('nombre')} {p.get('muestras_2anios',0)} resultados en {'90 días' if p.get('ventana_historial_dias')==90 else 'el período de dos años'}"
+                for j,p in ((jug_f,pf),(jug_r,pr)))+'. Registros parciales; no equivalen a toda la carrera.')
+        else:evidencia.append(f"{prefix} en los últimos dos años: {jug_f.get('nombre')} "
                          f"{pf.get('muestras_2anios', 0)} partidos; {jug_r.get('nombre')} {pr.get('muestras_2anios', 0)} partidos. "
                          "No equivale necesariamente a toda su carrera. Las fechas identifican la semana del torneo, no el día de cada partido.")
     for nombre,perfil in ((jug_f.get('nombre'),pf),(jug_r.get('nombre'),pr)):

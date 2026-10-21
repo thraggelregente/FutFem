@@ -2,6 +2,8 @@
 
 ## Despliegue actual: Northflank
 
+SportsAPI.app multideporte y control mensual de SportAPI.ai: [SPORTSAPI_APP_INTEGRACION.md](SPORTSAPI_APP_INTEGRACION.md). Clave `SPORTSAPI_APP_API_KEY`; cuota compartida de 100/día para siete deportes compatibles.
+
 Contexto por deporte y nueva sección de recomendaciones: [MOTORES_RECOMENDACIONES.md](MOTORES_RECOMENDACIONES.md). Revisión `sport-context-recommendations-v1`; conserva los umbrales del detector y se abstiene de recomendar cuando falta evidencia.
 
 El bot corre como servicio en Northflank, con instalación `pip install -r requirements.txt`, inicio `python -u main.py` y ruta de salud `/health`. La configuración y los secretos se mantienen en Environment del servicio. El servicio de Render fue retirado; se elimina su manifiesto obsoleto. No hace falta UptimeRobot para mantener activo este servicio. Upstash Redis conserva el estado entre despliegues.

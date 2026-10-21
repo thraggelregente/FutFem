@@ -10,6 +10,7 @@ FUENTES = {"wta": "WTA", "WTA oficial": "WTA", "WTA historial oficial": "WTA",
            "tennis_api": "Tennis API", "Tennis API": "Tennis API",
            "cricsheet": "Cricsheet", "balldontlie": "BALLDONTLIE",
            "sportapi": "SportAPI.ai",
+           "sportsapi_app": "SportsAPI.app", "SportsAPI.app historial": "SportsAPI.app",
            "worldrugby": "World Rugby",
            "sportscore": "SportScore",
            "tauron": "TAURON Liga Kobiet oficial", "lvf": "LVF oficial", "lnv": "LNV oficial",
@@ -142,7 +143,7 @@ def alerta(deporte, torneo, local, visita, hora, evidencias, nombre_destacado, e
     if analisis.get('selecciones'):
         recomendaciones.append('Orientación deportiva, sin cuotas ni rentabilidad calculada. No se propone resultado exacto ni tamaño de apuesta.')
     faltantes=list(dict.fromkeys(analisis.get('faltantes',[])))
-    cobertura = [d for d in detalles if d.startswith(('Historial oficial registrado','Historial registrado en las fuentes',
+    cobertura = [d for d in detalles if d.startswith(('Historial disponible:','Historial oficial registrado','Historial registrado en las fuentes',
                 'Tennis API:')) or ': contexto Tennis API WTA/ITF;' in d]
     detalles = [d for d in detalles if d not in cobertura]
     cobertura_txt = ('\n\n<b>Historial disponible</b>\n'+'\n'.join('• '+esc(historial_claro(d)) for d in cobertura)) if cobertura else ''
