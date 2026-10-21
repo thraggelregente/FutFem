@@ -25,6 +25,8 @@ class Cobertura:
 
     def decision(self, key, state, reason, result=None):
         self.decisiones[key] = {'state': state, 'reason': reason, 'evaluated': result is not None}
+        if result and result.get('analisis_deportivo'):
+            self.decisiones[key]['recommendations'] = result['analisis_deportivo']
 
     def entrega(self, destination_role, ok):
         self.deliveries[destination_role + (':complete' if ok else ':failed')] += 1
@@ -41,6 +43,12 @@ class Cobertura:
             sport = ev.get('deporte', 'unknown')
             row = deportes.setdefault(sport, {'unique_events': 0, 'sources_observed': [], 'states': {}, 'exclusive_events': {}})
             row['unique_events'] += 1
+            analysis=((self.decisiones.get(key) or {}).get('recommendations') or
+                      self.contextos.get(key,{}).get('recommendations'))
+            if analysis:
+                rec=row.setdefault('recommendations',{'evaluated':0,'with_market':0,'without_market':0})
+                rec['evaluated']+=1
+                rec['with_market' if analysis.get('selecciones') else 'without_market']+=1
             if key in self.contextos:
                 ctx_inputs = self.contextos[key]
                 counts = row.setdefault('context_evaluations', {'total': 0, 'both_histories_4plus': 0, 'with_table': 0, 'with_h2h': 0, 'sources_used': []})

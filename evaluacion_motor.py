@@ -47,7 +47,10 @@ def replay(snapshot):
     inputs = validar_asof(snapshot)
     sport = snapshot['sport']
     if sport == 'Tennis':
-        import motor_tenis
+        if snapshot.get('revision_motor') == 'tennis-volley-context-v1':
+            import motor_tenis_legacy as motor_tenis
+        else:
+            import motor_tenis
         return motor_tenis.evaluar(snapshot['evidence']['event'], inputs.get('perfiles'), ahora=inputs.get('evaluation_at_utc',snapshot['observed_at_utc']))
     if sport == 'Cricket':
         import motor_cricket
