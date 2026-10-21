@@ -40,7 +40,7 @@ Documentación: https://docs.tennis-api.com/getting-started ; https://docs.tenni
 
 ## Mapa de fuentes por deporte
 
-Configuración declarada de `render.yaml` y adaptadores integrados. **Habilitada** significa que existe una ruta utilizable con la configuración y claves presentes; no garantiza que hoy exista una liga femenina en el catálogo ni acceso verificado de todos sus endpoints. El mapa runtime y las fuentes observadas de `/health` tienen prioridad si se cambia Environment.
+Configuración de referencia del anterior despliegue Render y adaptadores integrados; el manifiesto obsoleto fue retirado al migrar a Northflank. **Habilitada** significa que existe una ruta utilizable con la configuración y claves presentes; no garantiza que hoy exista una liga femenina en el catálogo ni acceso verificado de todos sus endpoints. El mapa runtime y las fuentes observadas de `/health` tienen prioridad si se cambia Environment.
 
 | Deporte femenino | Proveedores habilitados, incluidos contextos | Calendario / contexto específico |
 |---|---:|---|

@@ -72,7 +72,22 @@ class Planificador:
             key = key_fn(ev)
             # Se conserva la rotación, con urgencia entre eventos todavía no intentados.
             return (last_attempt.get(key, 0), ev.get('startTimestamp') or now+86400, key)
-        return sorted(events, key=order)
+        # Intercalar deportes mantiene la rotación dentro de cada uno e impide
+        # que un calendario voluminoso consuma todos los análisis del ciclo.
+        from collections import deque
+        groups = {}
+        for ev in sorted(events, key=order):
+            groups.setdefault(ev.get('deporte', 'unknown'), deque()).append(ev)
+        sports = sorted(groups, key=lambda s: (order(groups[s][0]), s))
+        output = []
+        while sports:
+            active = []
+            for sport in sports:
+                output.append(groups[sport].popleft())
+                if groups[sport]:
+                    active.append(sport)
+            sports = active
+        return output
 
     def resumen(self):
         calls = sum(v for k,v in self.stats.items() if ':http:' in k)

@@ -5,7 +5,7 @@ def construir(modules, espn_activo=True):
     fixed={'sportscore':{'Soccer','Basketball','Tennis','Cricket'}, 'sportapi':{'Soccer'},
            'bbs':{'Basketball'},'balldontlie':{'Basketball'},'worldrugby':{'Rugby'},'wta':{'Tennis'},
            'pwhl':{'Ice Hockey'},'fivb':{'Volleyball'},'cev':{'Volleyball'},'openligadb':{'Soccer'},
-           'cricsheet':{'Cricket'}, 'lvf':{'Volleyball'}, 'lnv':{'Volleyball'}, 'tennis_api':{'Tennis'}}
+           'cricsheet':{'Cricket'}, 'lvf':{'Volleyball'}, 'lnv':{'Volleyball'}, 'tauron':{'Volleyball'}, 'tennis_api':{'Tennis'}}
     scope={'bbs':'WNBA', 'balldontlie':'WNBA', 'pwhl':'PWHL', 'worldrugby':'XV femenino',
            'wta':'cuadros, historial y ranking oficiales; cobertura ITF limitada',
            'fivb':'torneos indoor VIS verificados', 'cev':'competiciones indoor europeas verificadas',
@@ -15,6 +15,7 @@ def construir(modules, espn_activo=True):
            'cricsheet':'resultados publicados; sin calendario, clubes sin temporada no alertan',
            'lvf':'tablas e historial oficial Serie A1 femenina, edición actual',
            'lnv':'tablas e historial oficial D1F, edición descubierta desde web femenina',
+           'tauron':'calendario, tabla e historial TAURON Liga Kobiet, edición actual reconciliada',
            'tennis_api':'calendario, ranking fechado y complemento WTA/ITF; profundidad parcial'}
     output={sport:{'configured_sources':[], 'calendar_sources':[], 'context_only_sources':[], 'scopes':{}} for sport in sports}
     for name,module in modules.items():

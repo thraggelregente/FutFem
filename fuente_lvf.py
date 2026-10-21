@@ -1,6 +1,6 @@
 """Vóley femenino LVF oficial: contexto nacional, sin clave privada."""
 import os
-from voley_oficial import Oficial, cargar_lvf
+from voley_oficial import Oficial, cargar_lvf, completar_lvf
 FUENTE='lvf'
 ACTIVO=os.environ.get('LVF_ACTIVO','1')!='0'
 oficial=Oficial(FUENTE)
@@ -16,7 +16,12 @@ def obtener_eventos(deporte):
 
 def tabla_partido(ev):return oficial.tabla_para_evento(ev)
 
-def historial_equipo(ev,lado):return oficial.historial_para_evento(ev,lado)
+def historial_equipo(ev,lado):
+    if not disponible() or not oficial.tabla_para_evento(ev)[0]:return []
+    completar_lvf(oficial,{oficial.resolver(ev[s]['nombre']) for s in ('local','visita')})
+    return oficial.historial_para_evento(ev,lado)
+
+def iniciar_ciclo():oficial.details_cycle=0
 
 def estado_contexto():return dict(oficial.status)
 

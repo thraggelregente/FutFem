@@ -305,6 +305,9 @@ def _items_del_dia(deporte, fecha):
     if total is not None and len(items) < total:
         U.log(f"[highlightly/{deporte}] {fecha}: leÃ­ {len(items)} de {total} partidos "
               f"(tope de {MAX_PAGINAS} pÃ¡ginas; cargÃ¡ HIGHLIGHTLY_WOMENS_LEAGUES o ampliÃ¡ HIGHLIGHTLY_MAX_PAGINAS)")
+        if offset < total:
+            import cobertura_radar
+            cobertura_radar.actual.truncado(FUENTE, deporte)
     # Competiciones femeninas verificadas por el operador: consulta directa y exhaustiva por liga.
     conocidos = {n["id"] for n in items}
     for liga_id in sorted(_LIGAS_FEMENINAS.get(deporte, set())):

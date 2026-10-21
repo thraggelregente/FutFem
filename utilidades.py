@@ -778,11 +778,20 @@ def historial_desde_fuentes(evento, lado, fuente_espn, fuente_highlightly, fuent
 
 
 def h2h_desde_fuentes(evento, hist_local, hist_visita, fuente_highlightly, fuente_oddspapi, id_visita, libro_resultados=None):
-    h2h_local = [p for p in (hist_local or []) if id_visita and id_visita in (p.get("id_local"), p.get("id_visita"))]
-    if h2h_local:
-        return h2h_local
-
     loc, vis = evento.get("local") or {}, evento.get("visita") or {}
+    ids = {str(loc.get("id")), str(id_visita)}
+    h2h_descargado, vistos = [], set()
+    for p in list(hist_local or []) + list(hist_visita or []):
+        if not loc.get("id") or not id_visita or {str(p.get("id_local")), str(p.get("id_visita"))} != ids:
+            continue
+        key = (p.get("fecha"), tuple(sorted(((str(p.get("id_local")), p.get("puntos_local")),
+                                             (str(p.get("id_visita")), p.get("puntos_visita"))))))
+        if key not in vistos:
+            vistos.add(key)
+            h2h_descargado.append(p)
+    if h2h_descargado:
+        return h2h_descargado
+
     nom_loc, nom_vis = loc.get("nombre", ""), vis.get("nombre", "")
 
     if libro_resultados and nom_loc and nom_vis:

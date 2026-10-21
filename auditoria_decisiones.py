@@ -10,7 +10,7 @@ import utilidades as U
 
 REVISION = 'tennis-volley-context-v1'
 TTL = 90 * 86400
-MAX_RECORDS = 10000
+MAX_RECORDS = max(10000, min(50000, int(os.environ.get('AUDIT_MAX_RECORDS', '30000'))))
 MAX_BYTES = 100_000_000
 MAX_COMMANDS_MONTH = 90000
 MAX_TRANSFER_MONTH = 3_000_000_000
@@ -126,8 +126,13 @@ class Diario:
         size = sum(len(v.encode()) for v in payloads.values())
         mes = self._prune()
         total = sum(v['bytes'] for v in self.index['objects'].values())
+        additional = len(set(payloads)-set(self.index['objects']))
+        # Reservar capacidad para decisiones evaluadas, sin desalojar datos previos.
+        if value.get('evaluated') is False and len(self.index['objects']) + additional > int(MAX_RECORDS * .8):
+            self.omitted += 1
+            return None
         # No desalojar evidencia referida por una decisión todavía retenida.
-        if (len(self.index['objects']) + len(set(payloads)-set(self.index['objects'])) > MAX_RECORDS or total + size > MAX_BYTES
+        if (len(self.index['objects']) + additional > MAX_RECORDS or total + size > MAX_BYTES
                 or self.index['commands'].get(mes, 0) + len(self.pending) + len(payloads) + 2 >= MAX_COMMANDS_MONTH):
             self.omitted += 1
             return None
@@ -231,6 +236,7 @@ class Diario:
 
     def estado(self):
         return {'persistence': self.persistence, 'records_and_evidence': len(self.index['objects']),
+                'records_limit': MAX_RECORDS, 'evaluated_reserve_fraction': .2,
                 'bytes_compressed': sum(v['bytes'] for v in self.index['objects'].values()),
                 'commands_month': sum(self.index['commands'].values()), 'commands_limit_month': MAX_COMMANDS_MONTH,
                 'transfer_bytes_month_estimated':sum(self.index['transfer_bytes'].values()),
@@ -261,8 +267,11 @@ def registrar(ev, key, decision, reason, inputs=None, result=None, delivery=None
                       signals=(result or {}).get('signals') or (result or {}).get('evidencia') or (result or {}).get('alertas') or [],
                       data_quality=(result or {}).get('calidad') or (result or {}).get('calidad_datos'),
                       pre_match=bool(kickoff and ts < kickoff), delivery=delivery,
+                      evaluated=result is not None,
                       persistence=diario().persistence)
-        return diario().guardar('decision', record, {'event': ev, 'inputs': inputs or {}, 'result': result or {}})
+        # Las colas no necesitan una segunda copia completa del fixture como evidencia.
+        evidence = {'event': ev, 'inputs': inputs or {}, 'result': result or {}} if result is not None else {}
+        return diario().guardar('decision', record, evidence)
     except Exception as exc:
         U.log('[audit] registro omitido: ' + type(exc).__name__)
         return None
