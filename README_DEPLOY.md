@@ -1,5 +1,12 @@
 # Radar de asimetrías deportivas femeninas — despliegue
 
+## Despliegue actual: Northflank
+
+El bot corre como servicio en Northflank, con instalación `pip install -r requirements.txt`, inicio `python -u main.py` y ruta de salud `/health`. La configuración y los secretos se mantienen en Environment del servicio. El servicio de Render fue retirado; se elimina su manifiesto obsoleto. No hace falta UptimeRobot para mantener activo este servicio. Upstash Redis conserva el estado entre despliegues.
+
+Último pack de fuentes y validación: [FUENTES_PASOS_2_3.md](FUENTES_PASOS_2_3.md). Las referencias posteriores a Render describen el despliegue anterior.
+
+
 Mensajes del 14/10/2026: separan magnitud y respaldo de los datos, identifican los nombres en muestras/márgenes/Elo y explican resultados frente a rivales comunes, calendario, forma, H2H y rachas. Conservan todas las evidencias; una alerta larga se envía en partes con HTML balanceado y sólo se considera entregada si un destino recibe todas las partes. La sección **Recomendaciones** queda pendiente de evaluación, sin picks ni mercados automáticos. No cambia el puntaje ni los umbrales del motor.
 
 La investigación de las cinco mejoras siguientes está en [PLAN_MEJORAS.md](PLAN_MEJORAS.md), como especificación **no implementada**. Incluye requisitos, costes, pruebas de aceptación y la fuente opcional Tennis API Free a validar con suscripción.
@@ -19,7 +26,7 @@ Conector opcional nuevo **BALLDONTLIE WNBA**: crear una cuenta Free en https://a
 
 ## Archivos
 
-Subí todos los archivos del ZIP al mismo directorio del repositorio. `render.yaml` define el comando de instalación, inicio y variables no secretas. Ejecutá localmente para validar:
+Northflank construye el repositorio desde GitHub. Los comandos de instalación e inicio están indicados arriba. Ejecutá localmente para validar:
 
 ```bash
 python -m pip install -r requirements.txt

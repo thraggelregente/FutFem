@@ -47,7 +47,7 @@ def compatible(event, outcome):
         outcome.get('provider_url') and o.get('sportscore_url') == outcome['provider_url']) for o in obs)
     # Aun con ID idéntico, verificar deporte y participantes antes de aceptar.
     ref=outcome.get('verified_event_ref') or {}
-    if outcome.get('source') in ('lvf','lnv') and outcome.get('link_method')=='official_competition_alias_pair_exact_time':
+    if outcome.get('source') in ('lvf','lnv','tauron') and outcome.get('link_method')=='official_competition_alias_pair_exact_time':
         exact=exact or bool(ref.get('id') and ref.get('source')) and any(o.get('fuente')==ref.get('source') and o.get('id')==ref.get('id') and
                            o.get('startTimestamp')==outcome.get('kickoff_utc') for o in obs)
     if exact:

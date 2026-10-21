@@ -12,6 +12,7 @@ for _key in ("TELEGRAM_TOKEN", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOK
 
 os.environ["LVF_ACTIVO"] = "0"
 os.environ["LNV_ACTIVO"] = "0"
+os.environ["TAURON_ACTIVO"] = "0"
 
 import utilidades as U
 import motor_mismatches as M

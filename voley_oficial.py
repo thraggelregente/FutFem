@@ -58,6 +58,7 @@ class Oficial:
         self.cache=U.CachePersistente(fuente+'_voley_v1',6*3600,max_items=32)
         self.cliente=Cliente(fuente,self.cache,limite=24)
         self.historial=[];self.eventos=[];self.tabla={};self.edicion=None
+        self.details_cycle=0
         self.status={'state':'not_loaded','teams':0,'history':0,'events':0}
 
     def cargar_lvf(self,text,now=None):
@@ -153,7 +154,7 @@ class Oficial:
             b=U.firma_equipo(aliases.get(U.normalizar(p['b']),p['b']))
             if a not in tabla or b not in tabla or a==b:continue
             output.append(self._historico(a,b,p['score'],p['ts'],U.firma_partido(a,b)+'_'+str(p['ts'])))
-        self.tabla=tabla;self.historial=output
+        self.tabla=tabla;self.historial=output;self._lnv_expected=list(output)
         self.status.update(state='verified_table_and_results',teams=len(tabla),history=len(output),edition=self.edicion)
         return True
 
@@ -287,13 +288,21 @@ def cargar_lvf(oficial):
     if not oficial.cargar_lvf(text or ''):
         oficial.tabla={};oficial.historial=[];oficial.status.update(state='rejected_schema_or_season');return
     season=oficial.edicion.split(':')[-1]
+    completar_lvf(oficial, equipos=set())
+
+
+def completar_lvf(oficial, equipos):
+    if not oficial.edicion or not hasattr(oficial, '_lvf_pending'):
+        return
+    season=oficial.edicion.split(':')[-1]
     rows=[];nuevos=0
     for p in oficial._lvf_pending:
         url='https://www.legavolleyfemminile.it/match-center/'+p['match_id']+'/'
         params={'no_cache_sa':1}
         hit,_=oficial.cache.get((url,params))
-        if not hit and nuevos>=4:continue
+        if not hit and (oficial.details_cycle>=4 or not ({p['a'],p['b']} & equipos)):continue
         nuevos+=int(not hit)
+        oficial.details_cycle+=int(not hit)
         text=oficial.cliente.pedir(url,params,ttl=86400,xml=True)
         result=detalle_lvf(text or '',p,season)
         if result:
@@ -320,7 +329,8 @@ def cargar_lnv(oficial):
     if not oficial.cargar_lnv(text or '',edition):
         oficial.tabla={};oficial.historial=[];oficial.status.update(state='rejected_schema_or_dates')
         return
-    completar_lnv(oficial,edition,links[0])
+    oficial._lnv_pid=links[0]
+    completar_lnv(oficial,edition,links[0],equipos=set())
 
 
 def detalle_lnv(text,oficial,expected,now=None):
@@ -340,11 +350,12 @@ def detalle_lnv(text,oficial,expected,now=None):
     return dict(expected,puntos_por_set=sets)
 
 
-def completar_lnv(oficial,edition,pid):
+def completar_lnv(oficial,edition,pid,equipos=None):
     text=oficial.cliente.pedir('https://lnv-web.dataproject.com/CompetitionMatches.aspx',{'ID':edition,'PID':pid},ttl=86400,xml=True)
     if not text:
         oficial.historial=[];return
-    dates={p['startTimestamp'] for p in oficial.historial}
+    expected_rows=getattr(oficial,'_lnv_expected',oficial.historial)
+    dates={p['startTimestamp'] for p in expected_rows}
     candidates={}
     for hit in re.finditer(r'<span id="[^"]+_LB_DataOra">(\d{2}/\d{2}/\d{4} - \d{2}:\d{2})</span>',text):
         try:ts=int(datetime.strptime(hit.group(1),'%d/%m/%Y - %H:%M').replace(tzinfo=ZoneInfo('Europe/Paris')).timestamp())
@@ -359,12 +370,17 @@ def completar_lnv(oficial,edition,pid):
         params={'mID':mid,'ID':edition,'CID':cid,'PID':pid,'type':'LegList'}
         url='https://lnv-web.dataproject.com/MatchStatistics.aspx'
         hit,_=oficial.cache.get((url,params))
-        if not hit and new>=4:continue
+        relevant=any(p['startTimestamp']==ts and
+                     (equipos is None or any(U.firma_equipo(p.get('nom_'+s,'')) in equipos for s in ('local','visita')))
+                     for p in expected_rows)
+        if not hit and (oficial.details_cycle>=4 or not relevant):continue
         new+=int(not hit)
+        oficial.details_cycle+=int(not hit)
         page=oficial.cliente.pedir(url,params,ttl=86400,xml=True)
-        for expected in oficial.historial:
+        for expected in expected_rows:
             if expected['startTimestamp']!=ts:continue
             result=detalle_lnv(page or '',oficial,expected)
             if result:output.append(dict(result,id=oficial.fuente+'_'+mid))
     oficial.historial=list({p['id']:p for p in output}.values())
-    oficial.status.update(history=len(oficial.historial),state='verified_table_and_played_results')
+    oficial.status.update(history=len(oficial.historial),state=(
+        'verified_table_and_played_results' if oficial.historial else 'verified_table'))
